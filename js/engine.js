@@ -76,12 +76,12 @@
     return best;
   }
 
-  function isWolfForm(state, side) { return (side.status.wolfFormUntil || 0) > state.round; }
+  function isWolfForm(state, side) { return (side.status.wolfFormUntilTurn || 0) > side.turnsTaken; }
   function hasArmor(side) { return side.armor + side.extraArmor > 0; }
   function totalArmor(side) { return side.armor + side.extraArmor; }
 
   function canHeal(state, side) {
-    return !(side.status.healLockRound && side.status.healLockRound === state.round);
+    return !(side.status.healLockUntilTurn && side.turnsTaken < side.status.healLockUntilTurn);
   }
 
   /* ---------------- 建局 ---------------- */
@@ -91,6 +91,7 @@
     return {
       id,
       isAI: !!isAI,
+      turnsTaken: 0,
       classId,
       char,
       name: char.name,
@@ -113,14 +114,21 @@
         destinyUsed: false,
         skyUsed: false,
         sameSorrow: false,
-        cuteWindowRound: 0,
+        cutePending: false,
+        cuteWindowTurn: 0,
+        babyHealTurn: -1,
+        destinyPendingCardId: null,
+        allSeeing: false,
+        doubleArmorPending: 0,
       },
       status: {
-        nextDrawPenalty: 0,
-        wolfFormUntil: 0,
-        armorLockRound: 0,
-        breakAsNormalRound: 0,
-        healLockRound: 0,
+        drawPenalty: 0,
+        pendingDrawPenalty: 0,
+        wolfFormUntilTurn: 0,
+        armorLockTurn: 0,
+        breakAsNormalTurn: 0,
+        healLockUntilTurn: 0,
+        frozenTurn: 0,
       },
       pendingNextDamage: 0,
     };
@@ -132,14 +140,13 @@
       skipKind: null,
       scavengeUid: null,
       werewolfJudge: false,
-      destinyCardId: null,
       cuteUsed: false,
       selfHarm: 0,
+      newbornValue: 0,
       playLimitBonus: 0,
       damagePerCard: 0,
       breakMultiplier: 1,
       ignoreArmorAll: false,
-      ignoreHalfArmor: side.classId === 'chuanxi',
       damageReduction: 0,
       armorValues: [],
       playedCount: 0,
@@ -181,8 +188,10 @@
       setupChoices: {},
       controllers: opts.controllers || {},
       aiPlan: null,
-      nextRoundDrawPenalty: 0,
-      ruleVersion: 1,
+      active: null,
+      turn: 0,
+      mode: opts.mode || 'solo',
+      ruleVersion: 2,
     };
     state.player = makeSide(state, 'player', playerClass, false);
     state.ai = makeSide(state, 'ai', aiClass, true);
@@ -236,64 +245,102 @@
       }
       log(state, side.name + ' 起手 ' + side.hand.length + ' 张牌', 'system', side.id);
     });
-    state.round = 0;
-    beginRound(state);
+    state.round = 1;
+    state.turn = 0;
+    state.active = 'player';
+    beginTurn(state, 'player');
     return { ok: true };
   }
 
-  /* ---------------- 回合开始 ---------------- */
-  function beginRound(state) {
-    if (state.phase === 'gameover') return;
-    state.round += 1;
+  /* ---------------- 回合开始 / 切换 ---------------- */
+  function beginTurn(state, sideId) {
+    if (state.phase === 'gameover') return { ok: false, error: '对局已结束' };
+    const side = state[sideId];
+    if (!side) return { ok: false, error: '无效角色' };
+    const foe = otherSide(state, side);
+    state.active = sideId;
     state.phase = 'prepare';
-    state.turnSerial += 1;
+    state.turn += 1;
     state.lastResult = null;
     state.aiPlan = null;
     state.revealedCard = null;
     state.revealedCards = null;
-    log(state, '—— 第 ' + state.round + ' 回合 · 准备阶段 ——', 'round');
+    state.seerDraw = null;
+    state.seerAll = null;
+    state.turnSerial += 1;
+    [state.player, state.ai].forEach((s) => resetTemp(state, s));
+    side.turnsTaken += 1;
+    side.status.drawPenalty = side.status.pendingDrawPenalty || 0;
+    side.status.pendingDrawPenalty = 0;
 
-    [state.player, state.ai].forEach((side) => resetTemp(state, side));
+    log(state, '—— 第 ' + state.round + ' 回合 · ' + side.name + ' 的回合 · 准备阶段 ——', 'round');
 
-    // 枯牌阶段：牌库为空，回合开始失去 2 点生命
-    [state.player, state.ai].forEach((side) => {
-      if (side.deck.length === 0 && side.hp > 0) {
-        loseHp(state, side, 2, { sourceId: null, label: '枯牌', ignoreArmor: true, noReflect: true });
-        log(state, side.name + ' 牌库已空，枯牌阶段失去 2 点生命', 'damage', side.id);
-      }
-    });
+    // 枯牌阶段：轮到谁，谁在回合开始失去 2 点生命
+    if (side.deck.length === 0 && side.hp > 0) {
+      log(state, side.name + ' 牌库已空，枯牌阶段失去 2 点生命', 'damage', side.id);
+      loseHp(state, side, 2, { sourceId: null, label: '枯牌', noReflect: true });
+    }
     resolveDeaths(state);
-    if (state.phase === 'gameover') return;
+    if (state.phase === 'gameover') return { ok: true, gameover: true };
 
-    // 预言家 · 前瞻
-    [state.player, state.ai].forEach((side) => {
-      if (side.classId !== 'yuyanjia') return;
-      const foe = otherSide(state, side);
-      if (foe.hand.length > 0) {
-        const card = foe.hand[Math.floor(state.rng() * foe.hand.length)];
-        state.revealedCard = {
-          round: state.round,
-          viewer: side.id,
-          owner: foe.id,
-          card: { uid: card.uid, name: card.name, type: card.type, value: card.value, img: card.img, id: card.id },
-        };
-        log(state, (side.isAI ? '预言家' : '你') + ' 使用【前瞻】，看到对手 1 张手牌', 'passive', side.id);
-      }
+    // 预言家 · 前瞻：每当对手摸牌时看到摸到的牌（在 drawCards 中记录）
+
+    // 预言家必杀 · 全知：每个人回合开始前，查看对方全部手牌
+    [state.player, state.ai].forEach((viewer) => {
+      if (viewer.classId !== 'yuyanjia' || !viewer.long.allSeeing || viewer.hp <= 0) return;
+      const target = otherSide(state, viewer);
+      if (!target || target.hp <= 0) return;
+      if (!state.seerAll) state.seerAll = {};
+      state.seerAll[viewer.id] = target.hand.map((c) => ({
+        uid: c.uid, id: c.id, name: c.name, type: c.type, value: c.value, img: c.img,
+      }));
+      log(state, viewer.name + ' 的【全知】看到 ' + target.name + ' 的全部手牌', 'passive', viewer.id);
     });
 
-    // 三月七 · 可爱即是正义 窗口
-    [state.player, state.ai].forEach((side) => {
-      if (side.classId === 'sanyueqi' && side.long.cuteWindowRound === state.round) {
+    if (side.status.frozenTurn === side.turnsTaken) {
+      log(state, side.name + ' 被【冰刻箭雨之时】冻结，本回合无法出牌', 'status', side.id);
+    }
+
+    // 三月七 · 可爱即是正义：上一轮持甲且未被攻击，本回合开始就绪
+    if (side.classId === 'sanyueqi') {
+      if (side.long.cutePending && totalArmor(side) > 0) {
+        side.long.cuteWindowTurn = side.turnsTaken;
         log(state, side.name + ' 的【可爱即是正义】已就绪：可将 1 张伤害牌转化为护甲牌', 'passive', side.id);
       }
-    });
+      side.long.cutePending = false;
+    }
 
-    // 狼人 · 月嚎 B 模式提示
-    [state.player, state.ai].forEach((side) => {
-      if (side.classId === 'langren' && side.long.wolfMode === 'B') {
-        log(state, side.name + ' 可在摸牌前发动【月嚎】判定（失去 5 点生命）', 'passive', side.id);
-      }
-    });
+    // 护盾维护：
+    // 1) 自己的下一个回合开始时，普通护甲全部消失；
+    // 2) 若上一回合打出至少 2 张叠甲卡，且对手回合结束时护甲未被完全击碎，
+    //    则把较小的那张叠甲卡数值留作额外护盾。
+    if (side.classId !== 'sanyueqi' && side.long.doubleArmorPending > 0 && side.armor > 0) {
+      const keep = side.long.doubleArmorPending;
+      if (keep > side.extraArmor) side.extraArmor = keep;
+      log(state, side.name + ' 的双甲未被全部击碎，额外护盾为 ' + side.extraArmor + ' 点', 'armor', side.id);
+    }
+    side.long.doubleArmorPending = 0;
+    if (side.armor > 0) {
+      const lost = side.armor;
+      side.armor = 0;
+      log(state, side.name + ' 的普通护甲在回合开始时消散（-' + lost + '）', 'armor', side.id);
+    }
+
+    if (side.classId === 'langren' && side.long.wolfMode === 'B') {
+      log(state, side.name + ' 可在摸牌前发动【月嚎】判定（失去 5 点生命）', 'passive', side.id);
+    }
+    if (side.status.drawPenalty > 0) {
+      log(state, side.name + ' 受【快手】影响，本回合摸牌 -' + side.status.drawPenalty, 'status', side.id);
+    }
+    return { ok: true };
+  }
+
+  function nextTurn(state) {
+    if (state.phase !== 'result') return { ok: false, error: '当前不能进入下一回合' };
+    const next = state.active === 'player' ? 'ai' : 'player';
+    if (next === 'player') state.round += 1;
+    const r = beginTurn(state, next);
+    return r.ok ? { ok: true, active: state.active } : r;
   }
 
   /* ---------------- 生命 / 护甲 / 回复 ---------------- */
@@ -338,9 +385,8 @@
     log(state, side.name + ' 回复 ' + actual + ' 点生命' + (label ? '（' + label + '）' : '') + '，当前 ' + side.hp, 'heal', side.id);
     const foe = otherSide(state, side);
     if (foe.classId === 'baobao' && foe.hp > 0 && actual > 0 && !opts.fromBaby) {
-      const flag = 'baby' + state.round;
-      if (!foe.temp[flag]) {
-        foe.temp[flag] = true;
+      if (foe.long.babyHealTurn !== state.turn) {
+        foe.long.babyHealTurn = state.turn;
         const half = Math.floor(actual / 2);
         if (half > 0) {
           log(state, foe.name + ' 的【吃奶奶】触发', 'passive', foe.id);
@@ -419,7 +465,21 @@
       drawn.push(c);
     }
     if (drawn.length < n) log(state, side.name + ' 牌库不足，只摸到 ' + drawn.length + ' 张', 'draw', side.id);
+    if (drawn.length > 0) noteSeerDraw(state, side, drawn);
     return drawn;
+  }
+
+  // 预言家·前瞻：对手每次摸牌，记录看到的牌（同一回合内累加）
+  function noteSeerDraw(state, drawingSide, drawn) {
+    const seer = otherSide(state, drawingSide);
+    if (!seer || seer.classId !== 'yuyanjia' || seer.hp <= 0) return;
+    if (!state.seerDraw || state.seerDraw.turn !== state.turn || state.seerDraw.viewer !== seer.id) {
+      state.seerDraw = { viewer: seer.id, owner: drawingSide.id, turn: state.turn, round: state.round, cards: [] };
+    }
+    drawn.forEach((c) => state.seerDraw.cards.push({
+      uid: c.uid, id: c.id, name: c.name, type: c.type, value: c.value, img: c.img,
+    }));
+    log(state, seer.name + ' 看到 ' + drawingSide.name + ' 摸到：' + cardNames(drawn), 'passive', seer.id);
   }
 
   function takeFromOpponent(state, thief, count) {
@@ -469,6 +529,8 @@
 
   function playableInfo(state, side, card) {
     if (state.phase !== 'play') return { ok: false, reason: '当前不是出牌阶段' };
+    if (state.active !== side.id) return { ok: false, reason: '不是你的回合' };
+    if (side.status.frozenTurn === side.turnsTaken) return { ok: false, reason: '被【冰刻箭雨之时】冻结，本回合无法出牌' };
     if (!card) return { ok: false, reason: '牌不存在' };
     const inHand = side.hand.some((c) => c.uid === card.uid);
     if (!inHand) return { ok: false, reason: '这张牌不在手中' };
@@ -477,19 +539,18 @@
     if (side.selection.indexOf(card.uid) >= 0) return { ok: true, selected: true };
     const foe = otherSide(state, side);
     if (card.type === 'armor') {
-      if (side.status.armorLockRound === state.round) return { ok: false, reason: '【绝杀】代价：本回合不能使用叠甲卡' };
+      if (side.status.armorLockTurn === side.turnsTaken) return { ok: false, reason: '【绝杀】代价：本回合不能使用叠甲卡' };
       return { ok: true, treatedAs: 'armor' };
     }
     if (card.type === 'break') {
-      if (side.status.breakAsNormalRound === state.round) {
-        if (hasArmor(foe)) return { ok: false, reason: '以普通伤害结算：对方有护甲，不可打出' };
+      if (side.status.breakAsNormalTurn > 0 && side.status.breakAsNormalTurn === side.turnsTaken) {
         return { ok: true, treatedAs: 'normal' };
       }
       if (!hasArmor(foe)) return { ok: false, reason: '对方无护甲，破甲卡不可打出' };
       return { ok: true, treatedAs: 'break' };
     }
     if (card.type === 'normal') {
-      if (hasArmor(foe)) return { ok: false, reason: '对方有护甲，普通伤害卡不可打出' };
+      // 普通伤害可以打出；结算时若对方有护盾，伤害会完全归零。
       return { ok: true, treatedAs: 'normal' };
     }
     if (card.type === 'rest') {
@@ -504,6 +565,7 @@
   function selectCard(state, sideId, uid) {
     const side = state[sideId];
     if (!side) return { ok: false, error: '无效角色' };
+    if (state.active !== sideId) return { ok: false, error: '不是你的回合' };
     const card = side.hand.find((c) => c.uid === uid);
     const info = playableInfo(state, side, card);
     if (!info.ok) return { ok: false, error: info.reason };
@@ -516,6 +578,8 @@
 
   function deselectCard(state, sideId, uid) {
     const side = state[sideId];
+    if (!side) return { ok: false, error: '无效角色' };
+    if (state.active !== sideId) return { ok: false, error: '不是你的回合' };
     side.selection = side.selection.filter((x) => x !== uid);
     delete side.choices[uid];
     return { ok: true };
@@ -523,6 +587,8 @@
 
   function setCardChoice(state, sideId, uid, mode) {
     const side = state[sideId];
+    if (!side) return { ok: false, error: '无效角色' };
+    if (state.active !== sideId) return { ok: false, error: '不是你的回合' };
     const card = side.hand.find((c) => c.uid === uid);
     if (!card) return { ok: false, error: '牌不在手中' };
     const opts = cardModeOptions(state, side, card);
@@ -537,6 +603,7 @@
     payload = payload || {};
     if (!side) return { ok: false, error: '无效角色' };
     if (state.phase === 'gameover') return { ok: false, error: '对局已结束' };
+    if (state.active !== side.id) return { ok: false, error: '不是你的回合' };
 
     if (ability === 'meditation') {
       if (side.classId !== 'chensiyu') return { ok: false, error: '职业不符' };
@@ -553,7 +620,7 @@
       if (side.classId !== 'sanyueqi') return { ok: false, error: '职业不符' };
       if (state.phase !== 'prepare') return { ok: false, error: '只能在回合准备阶段使用' };
       if (side.temp.cuteUsed) return { ok: false, error: '本回合已经转化过' };
-      if (side.long.cuteWindowRound !== state.round) return { ok: false, error: '尚未满足【可爱即是正义】条件' };
+      if (side.long.cuteWindowTurn !== side.turnsTaken) return { ok: false, error: '尚未满足【可爱即是正义】条件' };
       const card = side.hand.find((c) => c.uid === payload.uid);
       if (!card) return { ok: false, error: '请选择手牌' };
       if (card.type !== 'break' && card.type !== 'normal') return { ok: false, error: '只能转化伤害牌' };
@@ -569,7 +636,7 @@
       });
       side.hand = side.hand.map((c) => (c.uid === card.uid ? generated : c));
       side.temp.cuteUsed = true;
-      side.long.cuteWindowRound = 0;
+      side.long.cuteWindowTurn = 0;
       log(state, side.name + ' 发动【可爱即是正义】' + (side.isAI ? '，将 1 张伤害牌转化为了护甲牌' : '，将「' + card.name + '」转化为 ' + armorValue + ' 点护甲牌'), 'passive', side.id);
       return { ok: true };
     }
@@ -595,8 +662,8 @@
       if (state.phase !== 'prepare') return { ok: false, error: '只能在对方摸牌前发动' };
       if (!payload.cardId || !cardDef(payload.cardId)) return { ok: false, error: '请选择一种牌' };
       side.long.destinyUsed = true;
-      side.temp.destinyCardId = payload.cardId;
-      log(state, side.name + ' 发动【命定】，指定对方下一次摸到「' + cardDef(payload.cardId).name + '」', 'passive', side.id);
+      side.long.destinyPendingCardId = payload.cardId;
+      log(state, side.name + ' 发动【命定】' + (side.isAI ? '，指定了对方下一次摸到的牌' : '，指定对方下一次摸到「' + cardDef(payload.cardId).name + '」'), 'passive', side.id);
       return { ok: true };
     }
 
@@ -635,11 +702,18 @@
     if (ability === 'selfHarm') {
       if (side.classId !== 'ranxue') return { ok: false, error: '职业不符' };
       if (state.phase !== 'play') return { ok: false, error: '只能在出牌阶段使用' };
-      if (side.temp.selfHarm) return { ok: false, error: '本回合已经自伤过' };
-      if (side.hp <= 1) return { ok: false, error: '生命不足' };
+      if (side.temp.selfHarm) return { ok: false, error: '本回合已经使用过【新生】' };
+      const atk = side.hand.find((c) => c.uid === payload.uid && (c.type === 'break' || c.type === 'normal'));
+      if (!atk) return { ok: false, error: '请选择一张攻击卡' };
+      const value = atk.value;
+      const expectLoss = Math.max(0, value - totalArmor(side));
+      if (expectLoss >= side.hp) return { ok: false, error: '生命不足以承受这次自伤' };
       side.temp.selfHarm = 1;
-      loseHp(state, side, 1, { label: '新生', noReflect: true });
-      log(state, side.name + ' 发动【新生】自伤 1 点，回合结束回复等额生命', 'passive', side.id);
+      side.temp.newbornValue = value;
+      const absorbed = consumeArmor(state, side, value, {});
+      const rest = value - absorbed;
+      if (rest > 0) loseHp(state, side, rest, { label: '新生', noReflect: true });
+      log(state, side.name + ' 发动【新生】选择「' + atk.name + '」：受到 ' + value + ' 点可被护盾抵挡的伤害，回合结束回复 ' + value + ' 点生命', 'passive', side.id);
       return { ok: true };
     }
 
@@ -671,11 +745,12 @@
     const side = state[sideId];
     if (!side) return { ok: false, error: '无效角色' };
     if (state.phase !== 'play') return { ok: false, error: '必杀只能在出牌阶段使用' };
+    if (state.active !== sideId) return { ok: false, error: '不是你的回合' };
     if (side.long.ultimateUsed) return { ok: false, error: '本局必杀已经使用过' };
     const charId = side.classId;
 
     // 代价检查
-    const needDiscard = { kupai: 2, dao: 2, chuanzhang: 2, baobao: 1, chensiyu: 1, kuaishou: 1, sanyueqi: 1, jianbi: 1, chuanxi: 1, suyu: 1, yuyanjia: 1, shihuangzhe: 1 }[charId] || 0;
+    const needDiscard = { kupai: 2, dao: 2, chuanzhang: 2, baobao: 1, chensiyu: 1, kuaishou: 1, sanyueqi: 1, jianbi: 1, chuanxi: 1, suyu: 1, shihuangzhe: 1 }[charId] || 0;
     if (side.hand.length < needDiscard) return { ok: false, error: '手牌不足以支付必杀代价' };
     const selfCost = { fanren: 3, yuxue: 4, ranxue: 3, pojiazhankuang: 3, dunai: 2, nvwu: 3, langren: 6 }[charId] || 0;
     if (selfCost && side.hp <= selfCost) return { ok: false, error: '生命不足以支付必杀代价' };
@@ -687,6 +762,14 @@
     side.temp.ultimateName = side.char.ultimateName;
     log(state, '★ ' + side.name + ' 发动必杀【' + side.char.ultimateName + '】！', 'ultimate', side.id);
     if (needDiscard) payDiscard(state, side, needDiscard, '必杀');
+    if (charId === 'yuyanjia') {
+      const count = side.hand.length;
+      side.discard.push.apply(side.discard, side.hand);
+      side.hand = [];
+      side.selection = [];
+      side.choices = {};
+      log(state, side.name + ' 弃置全部手牌（' + count + ' 张）作为【宿命】的代价', 'cost', side.id);
+    }
     if (selfCost) loseHp(state, side, selfCost, { label: '必杀代价', noReflect: true });
     if (charId === 'xunqing') loseHp(state, side, xunqingHalf, { label: '必杀代价', noReflect: true });
     if (side.hp <= 0) {
@@ -711,8 +794,8 @@
         takeFromOpponent(state, side, 2);
         break;
       case 'sanyueqi':
-        addArmor(state, side, 6, '可爱审判');
-        healSide(state, side, 3, '可爱审判');
+        foe.status.frozenTurn = foe.turnsTaken + 1;
+        log(state, side.name + ' 发动【冰刻箭雨之时】：冻结 ' + foe.name + ' 的所有牌，其下一回合无法出牌', 'status', side.id);
         break;
       case 'yuxue':
         side.temp.damagePerCard += 3;
@@ -732,7 +815,7 @@
       case 'moshushou':
         side.temp.playLimitBonus += 2;
         side.temp.damagePerCard += 1;
-        side.status.nextDrawPenalty += 1;
+        side.status.pendingDrawPenalty += 1;
         break;
       case 'ranxue':
         drawCards(state, side, 2);
@@ -755,22 +838,19 @@
         break;
       case 'dunai':
         directDamage(state, side, foe, 5, { label: '剧毒奶昔', noReflect: false });
-        foe.status.healLockRound = state.round + 1;
+        foe.status.healLockUntilTurn = foe.turnsTaken + 2;
         log(state, foe.name + ' 下回合无法回血', 'status', foe.id);
         break;
       case 'yuyanjia':
-        if (foe.hand.length > 0) {
-          state.revealedCards = foe.hand.map((c) => ({ name: c.name, type: c.type, value: c.value, img: c.img }));
-          log(state, side.name + ' 查看了对手全部 ' + foe.hand.length + ' 张手牌', 'passive', side.id);
-        }
-        drawCards(state, side, 2);
+        side.long.allSeeing = true;
+        log(state, side.name + ' 获得【全知】：此后每个人回合开始前，查看对方全部手牌', 'status', side.id);
         break;
       case 'nvwu':
         directDamage(state, side, foe, 4, { label: '万毒锅', noReflect: false });
         drawCards(state, side, 2);
         break;
       case 'langren':
-        side.status.wolfFormUntil = state.round + CONFIG.WOLF_FORM_TURNS;
+        side.status.wolfFormUntilTurn = side.turnsTaken + CONFIG.WOLF_FORM_TURNS;
         log(state, side.name + ' 进入【狼化】：出牌上限 +1，所有伤害 +2，持续 2 回合', 'status', side.id);
         break;
       case 'dao':
@@ -835,17 +915,19 @@
   /* ---------------- 摸牌阶段 ---------------- */
   function resolveDestiny(state, side) {
     const caster = otherSide(state, side);
-    if (!caster.temp.destinyCardId) return;
-    const wanted = caster.temp.destinyCardId;
+    if (!caster.long.destinyPendingCardId) return;
+    const wanted = caster.long.destinyPendingCardId;
     const def = cardDef(wanted);
     const idx = side.deck.findIndex((c) => c.id === wanted);
     if (idx < 0) {
       side.temp.destinySkip = true;
-      log(state, '【命定】发动：' + side.name + ' 的牌库中已无「' + (def ? def.name : wanted) + '」，跳过摸牌', 'passive', caster.id);
+      caster.long.destinyPendingCardId = null;
+      log(state, '【命定】发动：' + side.name + ' 的牌库中已无指定牌，跳过摸牌', 'passive', caster.id);
       return;
     }
     const card = side.deck.splice(idx, 1)[0];
     side.deck.unshift(card);
+    caster.long.destinyPendingCardId = null;
     log(state, '【命定】发动：' + side.name + (caster.isAI ? ' 下一次摸到的牌被指定' : ' 下一次摸到的牌被指定为「' + card.name + '」'), 'passive', caster.id);
   }
 
@@ -860,7 +942,7 @@
           log(state, side.name + ' 跳过摸牌，用【开拓】拾回「' + card.name + '」', 'passive', side.id);
         }
       } else {
-        side.status.nextDrawPenalty += 1;
+        side.status.pendingDrawPenalty += 1;
         log(state, side.name + ' 跳过摸牌阶段；下回合摸牌 -1，本回合可出 3 张（不能使用凝神）', 'passive', side.id);
       }
       resolveDeaths(state);
@@ -883,8 +965,8 @@
       }
     }
 
-    let n = CONFIG.BASE_DRAW - (side.status.nextDrawPenalty || 0);
-    side.status.nextDrawPenalty = 0;
+    let n = CONFIG.BASE_DRAW - (side.status.drawPenalty || 0);
+    side.status.drawPenalty = 0;
     if (side.temp.destinySkip) n = 0;
     if (n < 0) n = 0;
     const drawn = drawCards(state, side, n);
@@ -898,7 +980,7 @@
         const duplicated = drawn.filter((c, i) => drawn.findIndex((x) => x.id === c.id) !== i).map((c) => c.name);
         log(state, '🌕 【月嚎】判定成功！摸到相同的牌：' + (duplicated.join('、') || drawn[0].name), 'ultimate', side.id);
         directDamage(state, side, foe, 15, { label: '月嚎·满月撕咬', noReflect: false });
-        side.status.wolfFormUntil = state.round + CONFIG.WOLF_FORM_TURNS;
+        side.status.wolfFormUntilTurn = side.turnsTaken + CONFIG.WOLF_FORM_TURNS;
         log(state, side.name + ' 进入【狼化】：出牌上限 +1，所有伤害 +2，持续 2 回合', 'status', side.id);
       } else {
         log(state, side.name + ' 的【月嚎】判定失败，没有摸到相同的牌', 'status', side.id);
@@ -909,28 +991,15 @@
 
   function startDraw(state) {
     if (state.phase !== 'prepare') return { ok: false, error: '当前不在准备阶段' };
+    if (!state.active) return { ok: false, error: '尚未开始回合' };
     state.phase = 'draw';
     log(state, '—— 摸牌阶段 ——', 'round');
-
-    // 电脑准备阶段决策（在玩家摸牌前完成，保持同时性）
-    const ctrl = state.controllers.ai;
-    if (ctrl && typeof ctrl.prepare === 'function') {
-      try { ctrl.prepare(state); } catch (e) { /* AI 失败不影响对局 */ }
-    }
-    if (state.phase === 'gameover') return { ok: true };
-
-    drawPhaseFor(state, state.player);
-    if (state.phase === 'gameover') return { ok: true };
-    drawPhaseFor(state, state.ai);
-    if (state.phase === 'gameover') return { ok: true };
-
+    const side = state[state.active];
+    drawPhaseFor(state, side);
+    if (state.phase === 'gameover') return { ok: true, gameover: true };
     state.phase = 'play';
-    log(state, '—— 出牌阶段：双方同时选牌 ——', 'round');
+    log(state, '—— 出牌阶段：选择至多 ' + currentPlayLimit(state, side) + ' 张牌 ——', 'round');
     state.aiPlan = null;
-    if (ctrl && typeof ctrl.plan === 'function') {
-      // 先让 AI 决定必杀/选择；避免玩家等待
-      try { state.aiPlan = ctrl.plan(state); } catch (e) { state.aiPlan = null; }
-    }
     return { ok: true };
   }
 
@@ -974,7 +1043,7 @@
         intent.armorValues.push(val);
         addArmor(state, side, val, card.name);
       } else if (card.type === 'break') {
-        const asNormal = side.status.breakAsNormalRound === state.round;
+        const asNormal = side.status.breakAsNormalTurn > 0 && side.status.breakAsNormalTurn === side.turnsTaken;
         if (asNormal) {
           intent.normalCards.push({ card, value: card.value + (side.classId === 'jifeng' ? 1 : 0) });
         } else {
@@ -983,8 +1052,8 @@
           intent.breakCards.push({ card, value: v });
         }
         if (card.id === 'juesha') {
-          side.status.armorLockRound = state.round + 1;
-          foe.status.breakAsNormalRound = state.round + 1;
+          side.status.armorLockTurn = side.turnsTaken + 1;
+          foe.status.breakAsNormalTurn = foe.turnsTaken + 1;
           log(state, '【绝杀】余波：' + side.name + ' 下回合不能使用叠甲卡；' + foe.name + ' 下回合破甲卡可当普通伤害牌打出', 'status', side.id);
         }
       } else if (card.type === 'normal') {
@@ -1036,6 +1105,15 @@
     let normalDmg = packet.normalTotal;
     let trueDmg = packet.trueTotal;
     const hadArmor = hasArmor(target);
+    if (packet.hadDamageCards) target.temp.wasAttacked = true;
+    // 修正：普通伤害在结算时如果对方仍有护盾，完全无法造成伤害。
+    if (normalDmg > 0 && hasArmor(target)) {
+      log(state, target.name + ' 持有护盾，普通伤害被完全抵消', 'armor', target.id);
+      normalDmg = 0;
+    }
+    if (target.classId === 'sanyueqi' && packet.hadDamageCards) {
+      target.long.cutePending = false;
+    }
     if (target.classId === 'jianbi') {
       if (breakDmg > 0 && hadArmor) breakDmg = Math.max(0, breakDmg - 1);
       if (normalDmg > 0) normalDmg = Math.max(0, normalDmg - 1);
@@ -1105,175 +1183,157 @@
     } else if (pDead) {
       state.winner = 'ai';
       state.phase = 'gameover';
-      log(state, '你倒下了。' + a.name + ' 获胜。', 'system');
+      log(state, p.name + ' 倒下了，' + a.name + ' 获胜。', 'system');
     } else if (aDead) {
       state.winner = 'player';
       state.phase = 'gameover';
-      log(state, '对手倒下了。你获胜！', 'system');
+      log(state, a.name + ' 倒下了，' + p.name + ' 获胜！', 'system');
     }
   }
 
-  function settleRound(state) {
-    if (state.phase !== 'play') return;
-    const p = state.player;
-    const a = state.ai;
-    const pCards = getSelectedCards(p);
-    let aiCards = [];
-    if (state.aiPlan && Array.isArray(state.aiPlan.uids)) {
-      aiCards = state.aiPlan.uids.map((uid) => a.hand.find((c) => c.uid === uid)).filter(Boolean);
+  function settleTurn(state) {
+    if (state.phase !== 'play') return { ok: false, error: '当前不是出牌阶段' };
+    const sideId = state.active;
+    const active = state[sideId];
+    const foe = otherSide(state, active);
+
+    if (sideId === 'ai' && state.aiPlan && state.aiPlan.choices) {
+      Object.keys(state.aiPlan.choices).forEach((uid) => { active.choices[uid] = state.aiPlan.choices[uid]; });
     }
-    if (state.aiPlan && state.aiPlan.choices) {
-      Object.keys(state.aiPlan.choices).forEach((uid) => { a.choices[uid] = state.aiPlan.choices[uid]; });
+    let cards = getSelectedCards(active);
+    if (!cards.length && sideId === 'ai' && state.aiPlan && Array.isArray(state.aiPlan.uids)) {
+      cards = state.aiPlan.uids.map((uid) => active.hand.find((c) => c.uid === uid)).filter(Boolean);
     }
-    // 再给 AI 控制器一次机会（若未计划）
-    if (!state.aiPlan && state.controllers.ai && typeof state.controllers.ai.plan === 'function') {
-      try {
-        const plan = state.controllers.ai.plan(state);
-        state.aiPlan = plan;
-        aiCards = (plan.uids || []).map((uid) => a.hand.find((c) => c.uid === uid)).filter(Boolean);
-      } catch (e) { aiCards = []; }
-    }
-    if (aiCards.length > 3) aiCards = aiCards.slice(0, 3);
+    const limit = currentPlayLimit(state, active);
+    if (cards.length > limit) cards = cards.slice(0, limit);
 
     const startLog = state.log.length;
-    p.temp.hadArmorBefore = totalArmor(p) > 0;
-    a.temp.hadArmorBefore = totalArmor(a) > 0;
+    foe.temp.hadArmorBefore = totalArmor(foe) > 0;
     log(state, '—— 结算阶段 ——', 'round');
-    log(state, '你打出：' + cardNames(pCards), 'play', 'player');
-    log(state, a.name + ' 打出：' + cardNames(aiCards), 'play', 'ai');
+    log(state, active.name + ' 打出：' + cardNames(cards), 'play', active.id);
 
-    const pIntent = buildIntent(state, p, pCards);
-    const aIntent = buildIntent(state, a, aiCards);
+    const intent = buildIntent(state, active, cards);
 
     // 凝神 / 偷牌
-    [pIntent, aIntent].forEach((intent) => {
-      const owner = intent === pIntent ? p : a;
-      intent.draws.forEach((d) => { drawCards(state, owner, d.count); log(state, owner.name + ' 因【凝神】摸 ' + d.count + ' 张牌', 'draw', owner.id); });
-      intent.steals.forEach((s) => { takeFromOpponent(state, owner, s.count); });
+    intent.draws.forEach((d) => {
+      drawCards(state, active, d.count);
+      log(state, active.name + ' 因【凝神】摸 ' + d.count + ' 张牌', 'draw', active.id);
     });
+    intent.steals.forEach((st) => takeFromOpponent(state, active, st.count));
     resolveDeaths(state);
-    if (state.phase === 'gameover') { finishResult(state, startLog, pCards, aiCards, pIntent, aIntent); return; }
+    if (state.phase === 'gameover') { finishResult(state, startLog, cards); return { ok: true, gameover: true }; }
 
     // 休整：回血 / 毒奶诅咒
-    [pIntent, aIntent].forEach((intent) => {
-      const owner = intent === pIntent ? p : a;
-      const foe = otherSide(state, owner);
-      intent.heals.forEach((h) => healSide(state, owner, h.value, h.card.name));
-      intent.curses.forEach((c) => {
-        log(state, owner.name + ' 的【腐乳】将「奶」化为毒：对 ' + foe.name + ' 造成 ' + c.value + ' 点真实伤害，并封锁回血', 'passive', owner.id);
-        directDamage(state, owner, foe, c.value, { label: '腐乳', noReflect: false });
-        foe.status.healLockRound = state.round + 1;
-      });
+    intent.heals.forEach((h) => healSide(state, active, h.value, h.card.name));
+    intent.curses.forEach((c) => {
+      log(state, active.name + ' 的【腐乳】将「奶」化为毒：对 ' + foe.name + ' 造成 ' + c.value + ' 点真实伤害，并封锁回血', 'passive', active.id);
+      directDamage(state, active, foe, c.value, { label: '腐乳', noReflect: false });
+      foe.status.healLockUntilTurn = foe.turnsTaken + 2;
     });
     resolveDeaths(state);
-    if (state.phase === 'gameover') { finishResult(state, startLog, pCards, aiCards, pIntent, aIntent); return; }
+    if (state.phase === 'gameover') { finishResult(state, startLog, cards); return { ok: true, gameover: true }; }
 
-    // 伤害计算
-    const pOut = applyRoundDamageBonuses(state, p, pIntent);
-    const aOut = applyRoundDamageBonuses(state, a, aIntent);
-    const pPacket = {
-      breakTotal: pOut.breakTotal, normalTotal: pOut.normalTotal, trueTotal: 0,
-      hadDamageCards: pIntent.breakCards.length + pIntent.normalCards.length > 0, reflected: false,
+    // 伤害
+    const out = applyRoundDamageBonuses(state, active, intent);
+    const packet = {
+      breakTotal: out.breakTotal,
+      normalTotal: out.normalTotal,
+      trueTotal: 0,
+      hadDamageCards: intent.breakCards.length + intent.normalCards.length > 0,
+      reflected: false,
     };
-    const aPacket = {
-      breakTotal: aOut.breakTotal, normalTotal: aOut.normalTotal, trueTotal: 0,
-      hadDamageCards: aIntent.breakCards.length + aIntent.normalCards.length > 0, reflected: false,
-    };
-    // 先标记攻击者，供三月七判定
-    if (pPacket.hadDamageCards) a.temp.wasAttacked = true;
-    if (aPacket.hadDamageCards) p.temp.wasAttacked = true;
+    log(state, active.name + ' 本回合伤害：'
+      + (packet.breakTotal ? '破甲 ' + packet.breakTotal + '，' : '')
+      + (packet.normalTotal ? '普伤 ' + packet.normalTotal : '')
+      + (packet.breakTotal + packet.normalTotal === 0 ? '无' : ''), 'damage', active.id);
+    applyDamagePacket(state, active, foe, packet);
 
-    log(state, '你本回合伤害：' + (pPacket.breakTotal ? '破甲 ' + pPacket.breakTotal + '，' : '') + (pPacket.normalTotal ? '普伤 ' + pPacket.normalTotal : '') + (pPacket.breakTotal + pPacket.normalTotal === 0 ? '无' : ''), 'damage', 'player');
-    log(state, a.name + ' 本回合伤害：' + (aPacket.breakTotal ? '破甲 ' + aPacket.breakTotal + '，' : '') + (aPacket.normalTotal ? '普伤 ' + aPacket.normalTotal : '') + (aPacket.breakTotal + aPacket.normalTotal === 0 ? '无' : ''), 'damage', 'ai');
+    // 双叠甲：等对手回合结束后，在自己下回合开始时检查护甲是否未被全部击碎
+    if (active.classId !== 'sanyueqi' && intent.armorValues.length >= 2) {
+      active.long.doubleArmorPending = Math.min.apply(null, intent.armorValues);
+      log(state, active.name + ' 打出双叠甲；若对手回合结束时护甲未被全部击碎，下回合保留较小值作为额外护盾', 'armor', active.id);
+    } else {
+      active.long.doubleArmorPending = 0;
+    }
 
-    // 结算护甲（已在 buildIntent 中加入），再结算伤害
-    applyDamagePacket(state, p, a, pPacket);
-    applyDamagePacket(state, a, p, aPacket);
-
-    // 额外护盾
-    [pIntent, aIntent].forEach((intent) => {
-      const owner = intent === pIntent ? p : a;
-      if (owner.classId === 'sanyueqi') return;
-      if (intent.armorValues.length >= 2 && totalArmor(owner) > 0) {
-        const extra = Math.min.apply(null, intent.armorValues);
-        if (extra > owner.extraArmor) {
-          owner.extraArmor = extra;
-          log(state, owner.name + ' 的双甲未被击碎，获得 ' + extra + ' 点额外护盾（优先扣除）', 'armor', owner.id);
-        }
+    // 三月七反击：在对方回合被攻击且护甲未碎
+    if (foe.classId === 'sanyueqi' && foe.temp.hadArmorBefore && foe.temp.wasAttacked && totalArmor(foe) > 0) {
+      const smallest = smallestDamageCard(foe.hand);
+      if (smallest) {
+        log(state, foe.name + ' 的【少女的特权】触发，持甲被击且护甲未碎，反击 ' + smallest.value + ' 点伤害', 'passive', foe.id);
+        loseHp(state, active, smallest.value, { label: '少女的特权', sourceId: foe.id, noReflect: true });
       }
-    });
-
-    // 三月七反击
-    [p, a].forEach((owner) => {
-      if (owner.classId !== 'sanyueqi') return;
-      if (!owner.temp.wasAttacked) return;
-      if (!owner.temp.hadArmorBefore) return;
-      if (totalArmor(owner) <= 0) return;
-      const smallest = smallestDamageCard(owner.hand);
-      if (!smallest) return;
-      const foe = otherSide(state, owner);
-      log(state, owner.name + ' 的【少女的特权】触发，持甲被击且护甲未碎，反击 ' + smallest.value + ' 点伤害', 'passive', owner.id);
-      loseHp(state, foe, smallest.value, { label: '少女的特权', sourceId: owner.id, noReflect: true });
-    });
+    }
     resolveDeaths(state);
 
-    // 回合结束触发
-    [p, a].forEach((owner) => {
-      if (owner.hp <= 0) return;
-      if (owner.classId === 'suyu') {
-        const heal = owner.hp <= 8 ? 2 : 1;
-        if (owner.temp.playedCount <= 1) healSide(state, owner, heal, '静息');
-        else log(state, owner.name + ' 本回合打出 ' + owner.temp.playedCount + ' 张牌，【静息】未触发', 'passive', owner.id);
+    // 自己的回合结束触发
+    if (active.hp > 0) {
+      if (active.classId === 'suyu') {
+        const heal = active.hp <= 8 ? 2 : 1;
+        if (active.temp.playedCount <= 1) healSide(state, active, heal, '静息');
+        else log(state, active.name + ' 本回合打出 ' + active.temp.playedCount + ' 张牌，【静息】未触发', 'passive', active.id);
       }
-      if (owner.classId === 'ranxue' && owner.temp.selfHarm > 0) {
-        healSide(state, owner, owner.temp.selfHarm, '新生');
+      if (active.classId === 'ranxue' && active.temp.newbornValue > 0) {
+        healSide(state, active, active.temp.newbornValue, '新生');
       }
-      if (owner.classId === 'sanyueqi') {
-        if (totalArmor(owner) > 0 && !owner.temp.wasAttacked) {
-          owner.long.cuteWindowRound = state.round + 1;
-          log(state, owner.name + ' 持甲且未被攻击，【可爱即是正义】下回合就绪', 'passive', owner.id);
-        }
+      if (active.classId === 'sanyueqi') {
+        active.long.cutePending = totalArmor(active) > 0;
+        if (active.long.cutePending) log(state, active.name + ' 持甲结束回合，若下个对手回合未被攻击，下回合可转化护甲', 'passive', active.id);
       }
-    });
+    }
     resolveDeaths(state);
-    if (state.phase === 'gameover') { finishResult(state, startLog, pCards, aiCards, pIntent, aIntent); return; }
-
-    finishResult(state, startLog, pCards, aiCards, pIntent, aIntent);
+    finishResult(state, startLog, cards);
+    return { ok: true };
   }
 
-  function finishResult(state, startLog, pCards, aiCards, pIntent, aIntent) {
-    state.phase = state.phase === 'gameover' ? 'gameover' : 'result';
+  function finishResult(state, startLog, cards) {
+    const active = state[state.active];
     state.player.selection = [];
     state.ai.selection = [];
     state.lastResult = {
       round: state.round,
+      turnSide: state.active,
+      turnName: active.name,
       logs: state.log.slice(startLog),
-      playerCards: pCards.map((c) => c.name),
-      aiCards: aiCards.map((c) => c.name),
+      playedCards: cards.map((c) => c.name),
       playerHp: state.player.hp,
       aiHp: state.ai.hp,
       playerArmor: totalArmor(state.player),
       aiArmor: totalArmor(state.ai),
       winner: state.winner,
-      ultimatePlayer: state.player.temp.ultimate,
-      ultimateAi: state.ai.temp.ultimate,
+      ultimate: !!(active.temp && active.temp.ultimate),
     };
     state.phase = state.winner ? 'gameover' : 'result';
   }
 
-  function nextRound(state) {
-    if (state.phase !== 'result') return { ok: false, error: '当前不能进入下一回合' };
-    beginRound(state);
+  function commitTurn(state) {
+    if (state.phase !== 'play') return { ok: false, error: '当前不是出牌阶段' };
+    if (!state.active) return { ok: false, error: '尚未开始回合' };
+    const active = state[state.active];
+    const cards = getSelectedCards(active);
+    if (cards.length > currentPlayLimit(state, active)) return { ok: false, error: '出牌数超出上限' };
+    settleTurn(state);
     return { ok: true };
   }
 
-  function commitTurn(state) {
-    if (state.phase !== 'play') return { ok: false, error: '当前不是出牌阶段' };
-    const p = state.player;
-    const cards = getSelectedCards(p);
-    if (cards.length > currentPlayLimit(state, p)) return { ok: false, error: '出牌数超出上限' };
-    settleRound(state);
-    return { ok: true };
+  function runAITurn(state, controller) {
+    if (state.phase === 'gameover') return { ok: false, error: '对局已结束' };
+    if (state.active !== 'ai') return { ok: false, error: '现在不是电脑的回合' };
+    const ctrl = controller || state.controllers.ai;
+    if (ctrl && typeof ctrl.prepare === 'function') {
+      try { ctrl.prepare(state); } catch (e) { /* AI 失败不影响对局 */ }
+    }
+    if (state.phase === 'gameover') return { ok: true, gameover: true };
+    const r = startDraw(state);
+    if (!r.ok || state.phase === 'gameover') return { ok: !!(r.ok), gameover: state.phase === 'gameover' };
+    let plan = { uids: [], choices: {} };
+    if (ctrl && typeof ctrl.plan === 'function') {
+      try { plan = ctrl.plan(state) || plan; } catch (e) { plan = { uids: [], choices: {} }; }
+    }
+    if (state.phase === 'gameover') return { ok: true, gameover: true };
+    state.aiPlan = plan;
+    commitTurn(state);
+    return { ok: true, gameover: state.phase === 'gameover' };
   }
 
   function getPlayLimit(state, sideId) {
@@ -1283,6 +1343,7 @@
 
   function canUseUltimate(state, sideId) {
     const side = state[sideId];
+    if (state.active !== sideId) return { ok: false, reason: '不是你的回合' };
     if (state.phase !== 'play') return { ok: false, reason: '仅出牌阶段可用' };
     if (side.long.ultimateUsed) return { ok: false, reason: '本局已使用' };
     return { ok: true };
@@ -1290,32 +1351,35 @@
 
   function getAbilityInfo(state, sideId) {
     const side = state[sideId];
+    const mine = state.active === sideId;
     const out = {};
-    if (side.classId === 'sanyueqi') out.cute = side.long.cuteWindowRound === state.round && state.phase === 'prepare' && !side.temp.cuteUsed;
-    if (side.classId === 'chensiyu') out.meditation = !side.long.meditationUsed && (state.phase === 'prepare' || state.phase === 'play');
-    if (side.classId === 'kupai') out.withered = !side.long.witheredUsed && (state.phase === 'prepare' || state.phase === 'play') && side.hp <= 4;
-    if (side.classId === 'yuyanjia') out.destiny = !side.long.destinyUsed && state.phase === 'prepare';
-    if (side.classId === 'moshushou') out.magicianSkip = state.phase === 'prepare';
-    if (side.classId === 'shihuangzhe') out.scavenge = state.phase === 'prepare' && side.discard.length > 0;
-    if (side.classId === 'langren' && side.long.wolfMode === 'B') out.wolfJudge = state.phase === 'prepare' && side.hp > 5;
-    if (side.classId === 'ranxue') out.selfHarm = state.phase === 'play' && !side.temp.selfHarm && side.hp > 1;
-    if (side.classId === 'xunqing') out.sameSorrow = state.phase === 'play' || state.phase === 'prepare';
+    if (side.classId === 'sanyueqi') out.cute = mine && side.long.cuteWindowTurn === side.turnsTaken && state.phase === 'prepare' && !side.temp.cuteUsed;
+    if (side.classId === 'chensiyu') out.meditation = mine && !side.long.meditationUsed && (state.phase === 'prepare' || state.phase === 'play');
+    if (side.classId === 'kupai') out.withered = mine && !side.long.witheredUsed && (state.phase === 'prepare' || state.phase === 'play') && side.hp <= 4;
+    if (side.classId === 'yuyanjia') out.destiny = mine && !side.long.destinyUsed && state.phase === 'prepare';
+    if (side.classId === 'moshushou') out.magicianSkip = mine && state.phase === 'prepare';
+    if (side.classId === 'shihuangzhe') out.scavenge = mine && state.phase === 'prepare' && side.discard.length > 0;
+    if (side.classId === 'langren' && side.long.wolfMode === 'B') out.wolfJudge = mine && state.phase === 'prepare' && side.hp > 5;
+    if (side.classId === 'ranxue') out.selfHarm = mine && state.phase === 'play' && !side.temp.selfHarm && side.hand.some((c) => c.type === 'break' || c.type === 'normal');
+    if (side.classId === 'xunqing') out.sameSorrow = mine && (state.phase === 'play' || state.phase === 'prepare');
     return out;
   }
 
-  function concede(state) {
+  function concede(state, sideId) {
     if (state.phase === 'gameover') return;
-    state.winner = 'ai';
+    const loser = sideId || 'player';
+    state.winner = loser === 'player' ? 'ai' : 'player';
     state.phase = 'gameover';
     state.lastResult = null;
-    log(state, '你认输了。', 'system');
+    log(state, (state[loser] ? state[loser].name : '玩家') + ' 认输了。', 'system');
   }
 
   const API = {
     createGame,
     chooseSetup,
     startGame,
-    beginRound,
+    beginTurn,
+    nextTurn,
     startDraw,
     selectCard,
     deselectCard,
@@ -1324,8 +1388,8 @@
     usePrepAbility,
     useUltimate,
     commitTurn,
-    settleRound,
-    nextRound,
+    settleTurn,
+    runAITurn,
     resolveDeaths,
     getPlayLimit,
     cardModeOptions,
@@ -1343,7 +1407,7 @@
     _internal: {
       gainCard, drawCards, takeFromOpponent, directDamage, loseHp, healSide,
       addArmor, consumeArmor, cardDef, otherSide, log, shuffle, makeRng,
-      onHpLost, computeArmorValue, applyPoisonOnDraw,
+      onHpLost, computeArmorValue, applyPoisonOnDraw, resetTemp,
     },
     CONFIG,
   };

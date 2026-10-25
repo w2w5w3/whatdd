@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
   <meta name="theme-color" content="#0d1016" />
-  <meta name="description" content="我的刀盾 · 修正版 — 手机 / 电脑双端适配的同人卡牌对战游戏。" />
+  <meta name="description" content="我的刀盾 · 修正版 — 回合制卡牌对战，支持单人 vs 电脑与局域网双人联机。" />
   <title>我的刀盾 · 修正版</title>
   <link rel="icon" href="assets/icon-192.png" />
   <link rel="manifest" href="manifest.json" />
@@ -36,12 +36,12 @@
 
       <div class="home-main">
         <section class="hero">
-          <div class="hero-kicker"><span></span> 双生刀盾 · 同时出牌 · 一决生死 <span></span></div>
+          <div class="hero-kicker"><span></span> 双生刀盾 · 回合制对战 · 一决生死 <span></span></div>
           <h1 class="hero-title">
             <span class="title-line">我的刀盾</span>
             <span class="title-sub">修正版<em>REVISED</em></span>
           </h1>
-          <p class="hero-lead">30 张固定牌库，22 位个性职业。<br />在同一回合里同时亮牌，用破甲、叠盾与斩杀线赢下对决。</p>
+          <p class="hero-lead">30 张固定牌库，22 位个性职业。<br />双方轮流行动，用破甲、叠盾与斩杀线赢下对决。</p>
 
           <div class="hero-actions">
             <button class="primary-btn hero-start" id="btn-start" type="button">
@@ -50,6 +50,7 @@
               <small>VS 电脑</small>
             </button>
             <button class="secondary-btn" id="btn-random-class" type="button">🎲 随机职业</button>
+            <button class="secondary-btn lan-btn" id="btn-lan" type="button">🌐 局域网联机</button>
             <button class="ghost-btn hero-jump" id="btn-jump-classes" type="button">浏览全部职业 ↓</button>
           </div>
 
@@ -81,7 +82,7 @@
         <span class="dot">·</span>
         <span>支持手机 / 平板 / 电脑</span>
         <span class="dot">·</span>
-        <span>v1.0.0</span>
+        <span>v1.1.0</span>
       </footer>
     </section>
 
@@ -215,7 +216,7 @@
           <button class="ghost-action" id="btn-clear-select" type="button">清空选择</button>
           <button class="commit-btn" id="btn-commit" type="button">
             <span id="commit-label">不出牌 · 结算</span>
-            <small id="commit-sub">同时揭晓</small>
+            <small id="commit-sub">结束出牌并结算</small>
           </button>
         </div>
       </section>
@@ -228,6 +229,7 @@
   <script src="js/config.js"></script>
   <script src="js/engine.js"></script>
   <script src="js/ai.js"></script>
+  <script src="js/lan.js"></script>
   <script src="js/ui.js"></script>
   <script src="js/main.js"></script>
 </body>

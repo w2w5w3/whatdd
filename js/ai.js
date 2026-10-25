@@ -38,8 +38,8 @@
       score = 60 + card.value;
       if (armor > 0 && armor < card.value) score += 8;
     } else if (card.type === 'normal') {
-      score = 58 + card.value;
-      if (foe.hp <= card.value) score += 25;
+      score = armor > 0 ? 8 : 58 + card.value;
+      if (armor === 0 && foe.hp <= card.value) score += 25;
     } else if (card.type === 'armor') {
       score = side.hp <= 12 ? 72 : 38;
       score += card.value * 2;
@@ -63,7 +63,7 @@
     const armor = E.totalArmor(foe);
 
     // 斩杀优先：只计算已经可打出的伤害牌
-    const damageOptions = options.filter((x) => x.card.type === 'break' || x.card.type === 'normal');
+    const damageOptions = options.filter((x) => x.card.type === 'break' || (x.card.type === 'normal' && armor === 0));
     const sortedDmg = damageOptions.slice().sort((a, b) => b.card.value - a.card.value);
     let dmgSum = 0;
     const lethalPicks = [];
@@ -152,7 +152,7 @@
     const foe = state.player;
 
     // 三月七：转化伤害牌为护甲
-    if (side.classId === 'sanyueqi' && side.long.cuteWindowRound === state.round && !side.temp.cuteUsed) {
+    if (side.classId === 'sanyueqi' && side.long.cuteWindowTurn === side.turnsTaken && !side.temp.cuteUsed) {
       const dmg = side.hand.filter((c) => c.type === 'break' || c.type === 'normal').sort((a, b) => b.value - a.value)[0];
       if (dmg) E.usePrepAbility(state, 'ai', 'cute', { uid: dmg.uid });
     }
@@ -202,6 +202,15 @@
     if (E.canUseUltimate(state, side.id).ok) {
       ult = tryUltimate(state, side);
       if (state.phase === 'gameover') return { uids: [], choices: {}, ultimate: ult };
+    }
+    // 燃血行者：如果护盾能完全挡住攻击卡数值，用【新生】换一次回合末回复
+    if (side.classId === 'ranxue' && state.phase === 'play' && !side.temp.selfHarm) {
+      const shield = E.totalArmor(side);
+      const atk = side.hand
+        .filter((c) => c.type === 'break' || c.type === 'normal')
+        .sort((a, b) => b.value - a.value)
+        .find((c) => c.value <= shield);
+      if (atk) E.usePrepAbility(state, 'ai', 'selfHarm', { uid: atk.uid });
     }
     const picks = chooseCards(state, side);
     const choices = pickModes(state, side, picks);

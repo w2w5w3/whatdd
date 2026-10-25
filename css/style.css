@@ -1043,3 +1043,41 @@ button { font-family: inherit; color: inherit; }
   .command-dock { position: sticky; bottom: 0; }
   .toast-root { bottom: calc(82px + var(--safe-bottom)); }
 }
+
+/* 回合制：当前行动方高亮 / 等待对手 */
+.fighter.active { border-color: rgba(243,217,145,.55); box-shadow: 0 0 0 1px rgba(243,217,145,.24), 0 16px 34px rgba(0,0,0,.35), inset 0 0 40px rgba(216,180,106,.05); }
+.fighter-ai.active { border-color: rgba(255, 152, 140, .5); box-shadow: 0 0 0 1px rgba(255,152,140,.2), 0 16px 34px rgba(0,0,0,.35), inset 0 0 40px rgba(227,91,80,.05); }
+.fighter.active .fighter-side::after { content: " · 行动中"; color: var(--gold-2); }
+.turn-wait { display: inline-flex; align-items: center; padding: 8px 12px; border: 1px dashed rgba(216,180,106,.25); border-radius: 8px; color: var(--gold-3); font-size: 10px; letter-spacing: .08em; white-space: nowrap; }
+.lan-btn { white-space: nowrap; }
+@media (max-width: 900px) {
+  .lan-btn { flex-basis: 100%; width: 100%; }
+  .turn-wait { font-size: 9px; padding: 6px 8px; }
+}
+
+/* 局域网联机 */
+.lan-field { display: flex; flex-direction: column; gap: 6px; }
+.lan-field label { font-size: 11px; color: var(--gold-3); letter-spacing: .12em; }
+.lan-field input {
+  width: 100%; box-sizing: border-box;
+  border: 1px solid rgba(216,180,106,.35); border-radius: 9px;
+  background: rgba(7,10,15,.8); color: var(--gold-2);
+  font-family: var(--font-serif); font-size: 24px; letter-spacing: .35em;
+  text-align: center; text-transform: uppercase; padding: 12px 10px; outline: none;
+}
+.lan-field input:focus { border-color: var(--gold); box-shadow: 0 0 0 2px rgba(216,180,106,.12); }
+.lan-room-box { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 16px; border: 1px dashed rgba(216,180,106,.35); border-radius: 12px; background: rgba(216,180,106,.05); }
+.lan-room-box span { font-size: 10px; letter-spacing: .16em; color: var(--gold-3); }
+.lan-room-box b { font-family: var(--font-serif); font-size: 34px; letter-spacing: .22em; color: var(--gold-2); text-shadow: 0 0 24px rgba(216,180,106,.25); }
+.lan-room-box .modal-btn { padding: 6px 10px; font-size: 10px; }
+.lan-waiting { display: flex; align-items: center; gap: 8px; margin: 14px 0 0; color: var(--gold-3); font-size: 11px; letter-spacing: .08em; }
+.lan-pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 0 rgba(216,180,106,.5); animation: lanPulse 1.5s infinite; }
+@keyframes lanPulse { 0% { box-shadow: 0 0 0 0 rgba(216,180,106,.5); } 70% { box-shadow: 0 0 0 10px rgba(216,180,106,0); } 100% { box-shadow: 0 0 0 0 rgba(216,180,106,0); } }
+@media (max-width: 900px) {
+  .lan-room-box { padding: 12px; gap: 8px; }
+  .lan-room-box b { font-size: 28px; }
+}
+
+.result-seer { border: 1px dashed rgba(105,186,255,.25); background: rgba(105,186,255,.06); color: #a9d8ff; border-radius: 8px; padding: 7px 10px; font-size: 11px; margin-bottom: 10px; }
+.result-seer b { color: #d5efff; }
+.intel-strip { flex-wrap: wrap; }
