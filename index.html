@@ -2,6 +2,8 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
   <meta name="theme-color" content="#0d1016" />
   <meta name="description" content="我的刀盾 · 修正版 — 回合制卡牌对战，支持单人 vs 电脑与局域网双人联机。" />
@@ -12,7 +14,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="我的刀盾" />
-  <link rel="stylesheet" href="css/style.css" />
+  <link rel="stylesheet" href="css/style.css?v=1.5.1" />
 </head>
 <body>
   <div id="app">
@@ -42,7 +44,7 @@
             <span class="title-line">我的刀盾</span>
             <span class="title-sub">修正版<em>REVISED</em></span>
           </h1>
-          <p class="hero-lead">30 张固定牌库，22 位个性职业。<br />双方轮流行动，用破甲、叠盾与斩杀线赢下对决。</p>
+          <p class="hero-lead">30 张固定牌库，23 位个性职业。<br />双方轮流行动，用破甲、叠盾与斩杀线赢下对决。</p>
 
           <div class="hero-actions">
             <button class="primary-btn hero-start" id="btn-start" type="button">
@@ -56,7 +58,7 @@
           </div>
 
           <div class="hero-meta">
-            <div><b>22</b><span>可选职业</span></div>
+            <div><b>23</b><span>可选职业</span></div>
             <div><b>30</b><span>固定牌库</span></div>
             <div><b>2</b><span>每回合出牌</span></div>
             <div><b>∞</b><span>重开对局</span></div>
@@ -71,7 +73,7 @@
               <div class="panel-kicker">CHOOSE YOUR EDGE</div>
               <h2>选择你的职业</h2>
             </div>
-            <div class="picker-count"><span id="class-count">22</span> / 22</div>
+            <div class="picker-count"><span id="class-count">23</span> / 23</div>
           </div>
           <div class="class-grid" id="class-grid"><!-- filled by JS --></div>
           <p class="picker-tip">点击职业查看被动与必杀 · 整局不可更换</p>
@@ -83,7 +85,7 @@
         <span class="dot">·</span>
         <span>支持手机 / 平板 / 电脑</span>
         <span class="dot">·</span>
-        <span>v1.3.0</span>
+        <span>v1.5.1</span>
         <span class="dot">·</span>
         <span id="ultimate-state">必杀：启用</span>
       </footer>
@@ -236,11 +238,11 @@
   <div id="modal-root" class="modal-root" aria-live="polite"></div>
   <div id="toast-root" class="toast-root"></div>
 
-  <script src="js/config.js"></script>
-  <script src="js/engine.js"></script>
-  <script src="js/ai.js"></script>
-  <script src="js/lan.js"></script>
-  <script src="js/ui.js"></script>
-  <script src="js/main.js"></script>
+  <script src="js/config.js?v=1.5.1"></script>
+  <script src="js/engine.js?v=1.5.1"></script>
+  <script src="js/ai.js?v=1.5.1"></script>
+  <script src="js/lan.js?v=1.5.1"></script>
+  <script src="js/ui.js?v=1.5.1"></script>
+  <script src="js/main.js?v=1.5.1"></script>
 </body>
 </html>
