@@ -18,9 +18,7 @@
     const foe = E._internal.otherSide(state, side);
     const choices = {};
     picks.forEach((card) => {
-      if (card.id === 'ningshen' && side.classId === 'kuaishou') {
-        choices[card.uid] = 'steal';
-      } else if ((card.id === 'tiaoxi' || card.id === 'huanyu') && side.classId === 'dunai') {
+      if ((card.id === 'tiaoxi' || card.id === 'huanyu') && side.classId === 'dunai') {
         const lethal = foe.hp <= card.value;
         if (lethal) choices[card.uid] = 'curse';
         else if (side.hp <= 7) choices[card.uid] = 'heal';
@@ -133,7 +131,7 @@
       case 'suyu': use = side.hp <= 12 && round2; break;
       case 'pojiazhankuang': use = side.hp > 8 && round2; break;
       case 'dunai': use = foeLow || (side.hp > 5 && round2); break;
-      case 'yuyanjia': use = lowHand || round2; break;
+      case 'yuyanjia': use = side.hp <= 15 || round2; break;
       case 'nvwu': use = side.hp > 5 && (foeLow || round2); break;
       case 'langren': use = side.hp > 8 && (round2 || foeLow); break;
       case 'dao': use = foeLow || round2; break;
@@ -142,7 +140,8 @@
       default: use = false;
     }
     if (!use) return false;
-    const res = E.useUltimate(state, side.id);
+    const opts = classId === 'kuaishou' ? { declaredType: ['normal', 'break', 'rest', 'armor'][Math.floor(rand(state) * 4)] } : {};
+    const res = E.useUltimate(state, side.id, opts);
     return res.ok;
   }
 
@@ -195,6 +194,10 @@
     if (E.canUseUltimate(state, side.id).ok) {
       tryUltimate(state, side);
       if (state.phase === 'gameover') return;
+    }
+    // 预言家：命定常驻能力，手牌少且对方手牌多时沉底 2 张
+    if (side.classId === 'yuyanjia' && !side.long.divineUsed && side.hand.length <= 2 && E._internal.otherSide(state, side).hand.length >= 2) {
+      E.useDivine(state, 'ai', {});
     }
     // 燃血行者：如果护盾能完全挡住攻击卡数值，用【新生】换一次回合末回复
     if (side.classId === 'ranxue' && !side.temp.selfHarm) {

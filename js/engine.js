@@ -113,6 +113,11 @@
         witheredUsed: false,
         meditationUsed: false,
         destinyUsed: false,
+        divineUsed: false,
+        babyBonusMaxHp: 0,
+        fanrenGuardUntil: 0,
+        chensiyuTax: false,
+        chensiyuNingshenTurn: -1,
         skyUsed: false,
         sameSorrow: false,
         cutePending: false,
@@ -127,6 +132,7 @@
         extraArmorTier: null,
         captainCount: 0,
         captainProgress: 0,
+        delayedCard: null,
       },
       status: {
         drawPenalty: 0,
@@ -152,6 +158,10 @@
       newbornValue: 0,
       playLimitBonus: 0,
       damagePerCard: 0,
+      armorBonus: 0,
+      healBonus: 0,
+      skipPlay: false,
+      freePlayUids: [],
       breakMultiplier: 1,
       ignoreArmorAll: false,
       damageReduction: 0,
@@ -206,6 +216,12 @@
       lastDraw: null,
       shieldHitSeq: 0,
       lastShieldHit: null,
+      pendingKuaishou: null,
+      resolvingDelayed: false,
+      kuaishouSeq: 0,
+      lastKuaishou: null,
+      kuaishouUltSeq: 0,
+      lastKuaishouUlt: null,
       turnLogStart: 0,
       mode: opts.mode || 'solo',
       ruleVersion: 2,
@@ -394,6 +410,16 @@
     opts = opts || {};
     amount = Math.max(0, Math.floor(amount));
     if (!amount || side.hp <= 0) return 0;
+    // 凡人必杀：受到的伤害 50% 转化为护甲，且生命不低于 3。
+    if (!opts.ignoreGuard && side.classId === 'fanren' && side.long.fanrenGuardUntil >= state.turn) {
+      const converted = Math.floor(amount / 2);
+      if (converted > 0) addArmor(state, side, converted, '凡躯');
+      let hpLoss = amount - converted;
+      hpLoss = Math.min(hpLoss, Math.max(0, side.hp - 3));
+      log(state, side.name + ' 的【凡躯】将 ' + amount + ' 点伤害中的 ' + converted + ' 点转化为护甲，实际失去 ' + hpLoss + ' 点生命', 'passive', side.id);
+      amount = hpLoss;
+      if (!amount) return 0;
+    }
     const before = side.hp;
     side.hp = Math.max(0, side.hp - amount);
     onHpLost(state, side, before, side.hp);
@@ -422,7 +448,14 @@
         const half = Math.floor(actual / 2);
         if (half > 0) {
           log(state, foe.name + ' 的【吃奶奶】触发', 'passive', foe.id);
+          const missing = Math.max(0, foe.maxHp - foe.hp);
           healSide(state, foe, half, '吃奶奶', { fromBaby: true, silent: false });
+          if (half > missing) {
+            foe.maxHp += 1;
+            foe.hp += 1;
+            foe.long.babyBonusMaxHp += 1;
+            log(state, foe.name + ' 的【吃奶奶】回复溢出，额外获得 1 点生命上限（累计 ' + foe.long.babyBonusMaxHp + '）', 'passive', foe.id);
+          }
         }
       }
     }
@@ -516,6 +549,11 @@
     }
     if (drawn.length < n) log(state, side.name + ' 牌库不足，只摸到 ' + drawn.length + ' 张', 'draw', side.id);
     if (drawn.length > 0) {
+      if (side.classId === 'chensiyu' && side.long.chensiyuTax) {
+        const foe = otherSide(state, side);
+        drawn.forEach(() => addArmor(state, foe, 1, '沉思语的代价'));
+        log(state, side.name + ' 的【灵魂烧烤】代价：' + foe.name + ' 获得 ' + drawn.length + ' 点护盾', 'passive', side.id);
+      }
       state.drawSeq += 1;
       state.lastDraw = { seq: state.drawSeq, sideId: side.id, count: drawn.length };
       noteSeerDraw(state, side, drawn);
@@ -560,6 +598,7 @@
     let limit = CONFIG.BASE_PLAY_LIMIT + (side.temp.playLimitBonus || 0);
     if (side.temp.skipKind === 'magician') limit = Math.max(limit, 3);
     if (isWolfForm(state, side)) limit += 1;
+    if (side.classId === 'rose') limit = 1;
     return limit;
   }
 
@@ -571,30 +610,29 @@
         { id: 'curse', label: '对对手造成 ' + card.value + ' 点真伤并封锁回血' },
       ];
     }
-    if (card.id === 'ningshen' && side.classId === 'kuaishou') {
-      return [
-        { id: 'draw', label: '摸 2 张牌' },
-        { id: 'steal', label: '改为摸对手 2 张手牌' },
-      ];
-    }
     return [];
   }
 
   function playableInfo(state, side, card) {
     if (state.phase !== 'play') return { ok: false, reason: '当前不是出牌阶段' };
     if (state.active !== side.id) return { ok: false, reason: '不是你的回合' };
+    if (state.pendingKuaishou) return { ok: false, reason: '请先完成偷牌选择' };
     if (side.status.frozenTurn === side.turnsTaken) return { ok: false, reason: '被【冰刻箭雨之时】冻结，本回合无法出牌' };
+    if (side.temp.skipPlay) return { ok: false, reason: '本回合跳过出牌' };
+    if (side.classId === 'rose' && side.long.delayedCard) return { ok: false, reason: '【延授】牌尚未结算，本回合不能再出牌' };
     if (!card) return { ok: false, reason: '牌不存在' };
     const inHand = side.hand.some((c) => c.uid === card.uid);
     if (!inHand) return { ok: false, reason: '这张牌不在手中' };
     const limit = currentPlayLimit(state, side);
-    if ((side.temp.playedCount || 0) >= limit) return { ok: false, reason: '本回合出牌数已达上限（' + limit + '）' };
+    const free = Array.isArray(side.temp.freePlayUids) && side.temp.freePlayUids.indexOf(card.uid) >= 0;
+    if (!free && (side.temp.playedCount || 0) >= limit) return { ok: false, reason: '本回合出牌数已达上限（' + limit + '）' };
     const foe = otherSide(state, side);
     if (card.type === 'armor') {
       if (side.status.armorLockTurn === side.turnsTaken) return { ok: false, reason: '【绝杀】代价：本回合不能使用叠甲卡' };
       return { ok: true, treatedAs: 'armor' };
     }
     if (card.type === 'break') {
+      // 【绝杀】转换：被转换成普通伤害后，即使对方无护甲也可以直接打出。
       if (side.status.breakAsNormalTurn > 0 && side.status.breakAsNormalTurn === side.turnsTaken) {
         return { ok: true, treatedAs: 'normal' };
       }
@@ -708,6 +746,10 @@
       return { ok: true };
     }
 
+    if (ability === 'viewOpponent') {
+      if (side.classId !== 'yuyanjia') return { ok: false, error: '职业不符' };
+      return { ok: true };
+    }
     if (ability === 'destiny') {
       if (side.classId !== 'yuyanjia') return { ok: false, error: '职业不符' };
       if (side.long.destinyUsed) return { ok: false, error: '本局已经使用过【命定】' };
@@ -807,9 +849,45 @@
     const side = state[sideId];
     if (!side) return { discard: 0, discardAll: false, hp: 0 };
     const charId = side.classId;
-    const needDiscard = { kupai: 2, dao: 2, chuanzhang: 2, baobao: 1, chensiyu: 1, kuaishou: 1, sanyueqi: 1, jianbi: 1, chuanxi: 1, suyu: 1, shihuangzhe: 1 }[charId] || 0;
-    const selfCost = { fanren: 3, yuxue: 4, ranxue: 3, pojiazhankuang: 3, dunai: 2, nvwu: 3, langren: 6 }[charId] || 0;
-    return { discard: needDiscard, discardAll: charId === 'yuyanjia', hp: selfCost };
+    const needDiscard = { kupai: 2, dao: 2, chuanzhang: 2, rose: 1, sanyueqi: 1, jianbi: 1, chuanxi: 1, suyu: 1, shihuangzhe: 1 }[charId] || 0;
+    const selfCost = { yuxue: 4, ranxue: 3, pojiazhankuang: 3, dunai: 2, nvwu: 3, langren: 6 }[charId] || 0;
+    return { discard: needDiscard, discardAll: false, hp: selfCost };
+  }
+
+  function useDivine(state, sideId, opts) {
+    opts = opts || {};
+    const side = state[sideId];
+    if (!side) return { ok: false, error: '无效角色' };
+    if (side.classId !== 'yuyanjia') return { ok: false, error: '职业不符' };
+    if (state.phase !== 'play') return { ok: false, error: '只能在自己出牌阶段使用' };
+    if (state.active !== sideId) return { ok: false, error: '不是你的回合' };
+    if (side.long.divineUsed) return { ok: false, error: '本局已使用过【命定】' };
+    const foe = otherSide(state, side);
+    side.long.divineUsed = true;
+    const count = side.hand.length;
+    side.discard.push.apply(side.discard, side.hand);
+    side.hand = [];
+    side.selection = [];
+    side.choices = {};
+    log(state, side.name + ' 发动【命定】，弃置全部手牌（' + count + ' 张）', 'passive', side.id);
+    let selected = Array.isArray(opts.opponentUids) ? opts.opponentUids : [];
+    selected = selected.filter((uid) => foe.hand.some((c) => c.uid === uid)).slice(0, 2);
+    if (side.isAI && !selected.length) {
+      selected = foe.hand.slice().sort((a, b) => b.value - a.value).slice(0, 2).map((c) => c.uid);
+    }
+    const moved = [];
+    selected.forEach((uid) => {
+      const idx = foe.hand.findIndex((c) => c.uid === uid);
+      if (idx < 0) return;
+      const card = foe.hand.splice(idx, 1)[0];
+      foe.deck.push(card);
+      moved.push(card.name);
+    });
+    if (moved.length) log(state, side.name + ' 将对方 ' + moved.length + ' 张手牌放回牌库底', 'passive', side.id);
+    side.long.allSeeing = true;
+    side.long.viewOpponent = true;
+    log(state, side.name + ' 的【命定】生效：对方手牌持续公开', 'status', side.id);
+    return { ok: true };
   }
 
   function useUltimate(state, sideId, opts) {
@@ -823,9 +901,9 @@
     const charId = side.classId;
 
     // 代价检查
-    const needDiscard = { kupai: 2, dao: 2, chuanzhang: 2, baobao: 1, chensiyu: 1, kuaishou: 1, sanyueqi: 1, jianbi: 1, chuanxi: 1, suyu: 1, shihuangzhe: 1 }[charId] || 0;
+    const needDiscard = { kupai: 2, dao: 2, chuanzhang: 2, rose: 1, sanyueqi: 1, jianbi: 1, chuanxi: 1, suyu: 1, shihuangzhe: 1 }[charId] || 0;
     if (side.hand.length < needDiscard) return { ok: false, error: '手牌不足以支付必杀代价' };
-    const selfCost = { fanren: 3, yuxue: 4, ranxue: 3, pojiazhankuang: 3, dunai: 2, nvwu: 3, langren: 6 }[charId] || 0;
+    const selfCost = { yuxue: 4, ranxue: 3, pojiazhankuang: 3, dunai: 2, nvwu: 3, langren: 6 }[charId] || 0;
     if (selfCost && side.hp <= selfCost) return { ok: false, error: '生命不足以支付必杀代价' };
     const xunqingHalf = charId === 'xunqing' ? Math.floor(side.hp / 2) : 0;
     if (charId === 'xunqing' && side.hp < 2) return { ok: false, error: '生命不足以支付必杀代价' };
@@ -835,17 +913,16 @@
     side.temp.ultimateName = side.char.ultimateName;
     log(state, '★ ' + side.name + ' 发动必杀【' + side.char.ultimateName + '】！', 'ultimate', side.id);
     if (needDiscard) payDiscard(state, side, needDiscard, '必杀', opts.discardUids);
-    if (charId === 'yuyanjia') {
-      const count = side.hand.length;
-      side.discard.push.apply(side.discard, side.hand);
-      side.hand = [];
-      side.selection = [];
-      side.choices = {};
-      noteCaptainCards(state, side, count);
-      log(state, side.name + ' 弃置全部手牌（' + count + ' 张）作为【命定】的代价', 'cost', side.id);
-    }
     if (selfCost) loseHp(state, side, selfCost, { label: '必杀代价', noReflect: true });
     if (charId === 'xunqing') loseHp(state, side, xunqingHalf, { label: '必杀代价', noReflect: true });
+    if (charId === 'kuaishou') {
+      side.armor = 0;
+      side.extraArmor = 0;
+      side.long.armorTier = null;
+      side.long.extraArmorTier = null;
+      side.status.armorLockTurn = side.turnsTaken;
+      log(state, side.name + ' 失去全部护甲，本回合无法叠甲', 'cost', side.id);
+    }
     if (side.hp <= 0) {
       resolveDeaths(state);
       return { ok: true, died: true };
@@ -853,20 +930,74 @@
 
     const foe = otherSide(state, side);
     switch (charId) {
-      case 'baobao':
-        healSide(state, side, 5, '奶妈降临');
-        drawCards(state, side, 1);
+      case 'baobao': {
+        const pairs = Math.floor((side.long.babyBonusMaxHp || 0) / 2);
+        side.temp.armorBonus += pairs * 2;
+        side.temp.damagePerCard += pairs;
+        side.temp.healBonus += pairs;
+        const lostMax = side.long.babyBonusMaxHp || 0;
+        side.long.babyBonusMaxHp = 0;
+        side.maxHp = Math.max(1, side.maxHp - lostMax);
+        side.hp = Math.min(side.hp, side.maxHp);
+        log(state, side.name + ' 发动【奶妈降临】：每 2 点额外生命上限使本回合护盾 +2、伤害 +1、回血 +1；失去 ' + lostMax + ' 点额外生命上限', 'ultimate', side.id);
         break;
+      }
       case 'fanren':
-        healSide(state, side, 3, '不屈凡躯');
-        side.temp.damageReduction += 2;
+        side.temp.skipPlay = true;
+        side.long.fanrenGuardUntil = state.turn + 1;
+        log(state, side.name + ' 发动【不屈凡躯】：本回合跳过出牌，直到下回合结束受到伤害的 50% 转化为护甲，且生命不低于 3', 'ultimate', side.id);
         break;
-      case 'chensiyu':
-        drawCards(state, side, 3);
+      case 'chensiyu': {
+        const ns = makeCard(state, 'ningshen');
+        side.hand.push(ns);
+        side.long.chensiyuTax = true;
+        side.long.chensiyuNingshenTurn = state.turn;
+        log(state, side.name + ' 发动【灵魂烧烤】：生成一张凝神；本回合打出凝神后额外获得 1 次出牌机会；此后每摸 1 张牌，对方获得 1 点护盾', 'ultimate', side.id);
         break;
-      case 'kuaishou':
-        takeFromOpponent(state, side, 2);
+      }
+      case 'rose': {
+        if (side.long.delayedCard) {
+          side.long.delayedCard.boost += 3;
+          const rr = resolveDelayed(state, side.id, true);
+          if (!rr.ok) log(state, side.name + ' 的【薪火】发动失败：' + rr.error, 'status', side.id);
+          if (state.phase === 'gameover') return { ok: true, gameover: true };
+        } else {
+          drawCards(state, side, 2);
+          log(state, side.name + ' 发动【薪火】，摸 2 张牌', 'ultimate', side.id);
+        }
         break;
+      }
+      case 'kuaishou': {
+        const declared = ['normal', 'break', 'rest', 'armor'].indexOf(opts.declaredType) >= 0 ? opts.declaredType : 'normal';
+        const cards = [];
+        for (let i = 0; i < 3 && foe.deck.length > 0; i += 1) cards.push(foe.deck.shift());
+        const matches = cards.filter((c) => c.type === declared).length;
+        const maxPick = Math.max(0, matches - 1);
+        state.kuaishouUltSeq += 1;
+        state.lastKuaishouUlt = {
+          seq: state.kuaishouUltSeq,
+          sideId: side.id,
+          declared,
+          declaredLabel: CONFIG.TYPE_META[declared] ? CONFIG.TYPE_META[declared].label : declared,
+          cards: cards.map((c) => ({ id: c.id, name: c.name, type: c.type, value: c.value, img: c.img })),
+          matches,
+          maxPick,
+        };
+        log(state, side.name + ' 宣言【' + (CONFIG.TYPE_META[declared] ? CONFIG.TYPE_META[declared].label : declared) + '】，从对方牌库顶端摸到 ' + cards.length + ' 张，其中符合宣言 ' + matches + ' 张', 'ultimate', side.id);
+        if (!cards.length) break;
+        if (matches === 0 || maxPick === 0) {
+          cards.forEach((c) => foe.hand.push(c));
+          log(state, '宣言牌数量不足，全部加入对方手牌', 'ultimate', side.id);
+        } else if (side.isAI || !opts.declaredType) {
+          const chosen = cards.filter((c) => c.type === declared).slice(0, maxPick);
+          const chosenUids = chosen.map((c) => c.uid);
+          cards.forEach((c) => (chosenUids.indexOf(c.uid) >= 0 ? side.hand.push(c) : foe.hand.push(c)));
+          log(state, side.name + ' 将 ' + chosen.length + ' 张加入手牌，其余加入对方手牌', 'ultimate', side.id);
+        } else {
+          state.pendingKuaishou = { sideId: side.id, cards, declared, maxPick };
+        }
+        break;
+      }
       case 'sanyueqi':
         foe.status.frozenTurn = foe.turnsTaken + 1;
         log(state, side.name + ' 发动【冰刻箭雨之时】：冻结 ' + foe.name + ' 的所有牌，其下一回合无法出牌', 'status', side.id);
@@ -915,26 +1046,9 @@
         foe.status.healLockUntilTurn = foe.turnsTaken + 2;
         log(state, foe.name + ' 下回合无法回血', 'status', foe.id);
         break;
-      case 'yuyanjia': {
-        side.long.allSeeing = true;
-        side.long.viewOpponent = true;
-        let selected = Array.isArray(opts.opponentUids) ? opts.opponentUids : [];
-        selected = selected.filter((uid) => foe.hand.some((c) => c.uid === uid)).slice(0, 2);
-        if (side.isAI && !selected.length) {
-          selected = foe.hand.slice().sort((a, b) => b.value - a.value).slice(0, 2).map((c) => c.uid);
-        }
-        const moved = [];
-        selected.forEach((uid) => {
-          const idx = foe.hand.findIndex((c) => c.uid === uid);
-          if (idx < 0) return;
-          const card = foe.hand.splice(idx, 1)[0];
-          foe.deck.push(card);
-          moved.push(card.name);
-        });
-        if (moved.length) log(state, side.name + ' 将对方 ' + moved.length + ' 张手牌放回其牌库底', 'status', side.id);
-        log(state, side.name + ' 获得【命定】：对方手牌持续公开，必杀已替换为【查看】', 'status', side.id);
+      case 'yuyanjia':
+        healSide(state, side, 5, '圣愈');
         break;
-      }
       case 'nvwu':
         directDamage(state, side, foe, 4, { label: '万毒锅', noReflect: false });
         drawCards(state, side, 2);
@@ -971,6 +1085,23 @@
     side.selection = side.selection.filter((uid) => side.hand.some((c) => c.uid === uid));
     if (state.phase === 'gameover' && !state.lastResult) finishResult(state);
     return { ok: true };
+  }
+
+  function resolveKuaishou(state, uids) {
+    const pending = state.pendingKuaishou;
+    if (!pending) return { ok: false, error: '没有待选择的偷牌' };
+    const side = state[pending.sideId];
+    const foe = otherSide(state, side);
+    const chosen = (uids || []).filter((uid) => pending.cards.some((c) => c.uid === uid)).slice(0, pending.maxPick == null ? 2 : pending.maxPick);
+    const chosenCards = [];
+    pending.cards.forEach((c) => {
+      if (chosen.indexOf(c.uid) >= 0) { side.hand.push(c); chosenCards.push(c); }
+      else foe.hand.push(c);
+    });
+    state.pendingKuaishou = null;
+    log(state, side.name + ' 从宣言偷牌中选择 ' + chosenCards.length + ' 张加入手牌，其余 ' + (pending.cards.length - chosenCards.length) + ' 张加入对方手牌', 'ultimate', side.id);
+    resolveDeaths(state);
+    return { ok: true, sideId: side.id };
   }
 
   function directDamage(state, source, target, amount, opts) {
@@ -1100,6 +1231,7 @@
     if (side.classId === 'jianbi') v += 1;
     if (side.classId === 'sanyueqi') v += 1;
     if (side.classId === 'pojiazhankuang') v -= 1;
+    v += side.temp.armorBonus || 0;
     return Math.max(0, v);
   }
 
@@ -1343,7 +1475,7 @@
     if (!side) return { ok: false, error: '无效角色' };
     const card = side.hand.find((c) => c.uid === uid);
     if (!card) return { ok: false, error: '牌不在手中' };
-    const info = playableInfo(state, side, card);
+    const info = state.resolvingDelayed || opts.autoPlay ? { ok: true } : playableInfo(state, side, card);
     if (!info.ok) return { ok: false, error: info.reason };
 
     const foe = otherSide(state, side);
@@ -1352,14 +1484,33 @@
     if (modes.length && !modes.some((m) => m.id === choice)) choice = modes[0].id;
     const startLog = state.log.length;
 
+    // 玫瑰老师【延授】：本回合只出 1 张，效果延迟到下回合结束阶段。
+    if (side.classId === 'rose' && !state.resolvingDelayed) {
+      side.hand = side.hand.filter((c) => c.uid !== uid);
+      side.temp.playedCount = (side.temp.playedCount || 0) + 1;
+      delete side.choices[uid];
+      side.long.delayedCard = {
+        card: Object.assign({}, card, { value: card.value }),
+        choice,
+        boost: 0,
+        delayedAtTurn: side.turnsTaken,
+      };
+      log(state, side.name + ' 发动【延授】，将「' + card.name + '」延迟到下回合出牌阶段最后', 'passive', side.id);
+      return { ok: true, delayed: true };
+    }
+
     // 打出与消耗
     side.hand = side.hand.filter((c) => c.uid !== uid);
     side.discard.push(card);
-    side.temp.playedCount = (side.temp.playedCount || 0) + 1;
-    side.temp.playedCards.push({
-      uid: card.uid, id: card.id, name: card.name, type: card.type, value: card.value,
-      desc: card.desc, img: card.img, choice,
-    });
+    const freeUidIndex = Array.isArray(side.temp.freePlayUids) ? side.temp.freePlayUids.indexOf(uid) : -1;
+    if (!opts.autoPlay && freeUidIndex < 0) side.temp.playedCount = (side.temp.playedCount || 0) + 1;
+    else side.temp.freePlayUids.splice(freeUidIndex, 1);
+    if (!opts.autoPlay) {
+      side.temp.playedCards.push({
+        uid: card.uid, id: card.id, name: card.name, type: card.type, value: card.value,
+        desc: card.desc, img: card.img, choice,
+      });
+    }
     delete side.choices[uid];
     noteCaptainCards(state, side, 1);
     log(state, side.name + ' 打出「' + card.name + '」' + (choice === 'curse' ? '（腐乳）' : ''), 'play', side.id);
@@ -1393,14 +1544,54 @@
       applyCardDamage(state, side, foe, { normalTotal: value, hadDamageCards: true });
     } else if (card.type === 'rest') {
       if (card.id === 'ningshen') {
-        if (choice === 'steal' && side.classId === 'kuaishou') {
-          takeFromOpponent(state, side, 2);
-          summary.notes.push('偷取对手 2 张手牌');
+        if (side.classId === 'kuaishou') {
+          if (state.inKuaishouNingshen) {
+            // 自动打出的额外凝神不再连锁触发掠影
+            drawCards(state, side, 2);
+          } else {
+            state.inKuaishouNingshen = true;
+            const ownDrawn = drawCards(state, side, 1);
+            const ownCard = ownDrawn[0] || null;
+            const enemyCard = foe.deck.length ? foe.deck.shift() : null;
+            if (enemyCard) {
+              gainCard(state, side, enemyCard);
+              log(state, side.name + ' 从对方牌库顶端摸到「' + enemyCard.name + '」', 'draw', side.id);
+            }
+            let extra = null;
+            let autoPlayed = false;
+            if (enemyCard && ownCard && enemyCard.id === ownCard.id && foe.deck.length) {
+              extra = foe.deck.shift();
+              side.hand.push(extra);
+              log(state, side.name + ' 的【掠影】发现两张「' + ownCard.name + '」，额外从对方牌库摸到「' + extra.name + '」，自动打出且不消耗出牌次数', 'passive', side.id);
+              const autoResult = playCard(state, side.id, extra.uid, { autoPlay: true });
+              autoPlayed = !!autoResult.ok;
+              if (!autoResult.ok) {
+                side.hand = side.hand.filter((c) => c.uid !== extra.uid);
+                log(state, side.name + ' 自动打出「' + extra.name + '」失败：' + autoResult.error, 'status', side.id);
+              }
+            }
+            state.inKuaishouNingshen = false;
+            state.kuaishouSeq = (state.kuaishouSeq || 0) + 1;
+            state.lastKuaishou = {
+              seq: state.kuaishouSeq,
+              sideId: side.id,
+              own: ownCard ? { id: ownCard.id, name: ownCard.name, type: ownCard.type, value: ownCard.value, img: ownCard.img } : null,
+              enemy: enemyCard ? { id: enemyCard.id, name: enemyCard.name, type: enemyCard.type, value: enemyCard.value, img: enemyCard.img } : null,
+              same: !!(enemyCard && ownCard && enemyCard.id === ownCard.id),
+              extra: extra ? { id: extra.id, name: extra.name, type: extra.type, value: extra.value, img: extra.img } : null,
+              autoPlayed,
+            };
+          }
         } else {
-          const n = 2 + (side.classId === 'chensiyu' ? 1 : 0);
+          const n = 2 + (side.classId === 'chensiyu' ? 1 : 0) + (card.delayedBoost || 0);
           drawCards(state, side, n);
           summary.draws = n;
           if (side.classId === 'chensiyu') log(state, '【别吵，我在烧烤】凝神额外摸 1 张牌', 'passive', side.id);
+          if (side.classId === 'chensiyu' && side.long.chensiyuNingshenTurn === state.turn) {
+            side.temp.playLimitBonus += 1;
+            side.long.chensiyuNingshenTurn = -1;
+            log(state, side.name + ' 因必杀效果，本回合额外获得 1 次出牌机会', 'passive', side.id);
+          }
         }
       } else if (choice === 'curse' && side.classId === 'dunai') {
         log(state, side.name + ' 的【腐乳】将「奶」化为毒：对 ' + foe.name + ' 造成 ' + card.value + ' 点真实伤害，并封锁回血', 'passive', side.id);
@@ -1408,8 +1599,9 @@
         directDamage(state, side, foe, card.value, { label: '腐乳', noReflect: false });
         foe.status.healLockUntilTurn = foe.turnsTaken + 2;
       } else {
-        healSide(state, side, card.value, card.name);
-        summary.heal = card.value;
+        const healAmount = card.value + (side.temp.healBonus || 0);
+        healSide(state, side, healAmount, card.name);
+        summary.heal = healAmount;
       }
     }
 
@@ -1427,10 +1619,42 @@
     return { ok: true, play: state.lastPlay, gameover: state.phase === 'gameover' };
   }
 
+  function resolveDelayed(state, sideId, activate) {
+    const side = state[sideId];
+    if (!side) return { ok: false, error: '无效角色' };
+    const delayed = side.long.delayedCard;
+    if (!delayed) return { ok: false, error: '当前没有延授牌' };
+    if (!activate) {
+      delayed.boost += 3;
+      delayed.delayedAtTurn = side.turnsTaken;
+      log(state, side.name + ' 的【延授】本回合不发动，「' + delayed.card.name + '」数值 +3（累计 +' + delayed.boost + '）', 'passive', side.id);
+      return { ok: true, postponed: true, boost: delayed.boost };
+    }
+    const card = Object.assign({}, delayed.card, { value: delayed.card.value + delayed.boost, delayedBoost: delayed.boost });
+    side.long.delayedCard = null;
+    side.hand.push(card);
+    state.resolvingDelayed = true;
+    const result = playCard(state, sideId, card.uid, { choice: delayed.choice });
+    state.resolvingDelayed = false;
+    if (!result.ok) {
+      side.hand = side.hand.filter((c) => c.uid !== card.uid);
+      side.long.delayedCard = delayed;
+      return result;
+    }
+    log(state, side.name + ' 的【延授】发动「' + card.name + '」（数值 +' + delayed.boost + '）', 'passive', side.id);
+    return { ok: true, activated: true, play: result };
+  }
+
   function endTurn(state) {
     if (state.phase !== 'play') return { ok: false, error: '当前不是出牌阶段' };
+    if (state.pendingKuaishou) return { ok: false, error: '请先完成偷牌选择' };
     const active = state[state.active];
     if (!active) return { ok: false, error: '尚未开始回合' };
+    if (active.classId === 'rose' && active.long.delayedCard && active.long.delayedCard.delayedAtTurn < active.turnsTaken) {
+      const rr = resolveDelayed(state, active.id, true);
+      if (state.phase === 'gameover') return { ok: true, gameover: true };
+      if (!rr.ok) return rr;
+    }
 
     // 双叠甲：自己回合结束时记录，等下一回合开始检查是否未被击碎
     if (active.classId !== 'sanyueqi' && active.temp.armorValues.length >= 2) {
@@ -1541,7 +1765,10 @@
     if (side.classId === 'sanyueqi') out.cute = mine && side.long.cuteWindowTurn === side.turnsTaken && state.phase === 'prepare' && !side.temp.cuteUsed;
     if (side.classId === 'chensiyu') out.meditation = mine && !side.long.meditationUsed && (state.phase === 'prepare' || state.phase === 'play');
     if (side.classId === 'kupai') out.withered = mine && !side.long.witheredUsed && (state.phase === 'prepare' || state.phase === 'play') && side.hp <= 4;
-    if (side.classId === 'yuyanjia' && side.long.viewOpponent) out.viewOpponent = mine && (state.phase === 'prepare' || state.phase === 'play');
+    if (side.classId === 'yuyanjia') {
+      out.viewOpponent = mine && !!side.long.viewOpponent && (state.phase === 'prepare' || state.phase === 'play');
+      out.divine = mine && !side.long.divineUsed && state.phase === 'play';
+    }
     if (side.classId === 'moshushou') out.magicianSkip = mine && state.phase === 'prepare';
     if (side.classId === 'shihuangzhe') out.scavenge = mine && state.phase === 'prepare' && side.discard.length > 0;
     if (side.classId === 'langren' && side.long.wolfMode === 'B') out.wolfJudge = mine && state.phase === 'prepare' && side.hp > 5;
@@ -1572,6 +1799,9 @@
     getSelectedCards,
     usePrepAbility,
     useUltimate,
+    useDivine,
+    resolveKuaishou,
+    resolveDelayed,
     getUltimateCost,
     commitTurn,
     playCard,

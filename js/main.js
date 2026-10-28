@@ -29,6 +29,9 @@
     guestRevealKey: null,
     guestBusy: false,
     guestPrepKey: null,
+    tutorial: false,
+    tutorialStep: 0,
+    tutorialCardPlayed: false,
     hostSendQueue: Promise.resolve(),
     guestSendQueue: Promise.resolve(),
     // 实时出牌 / 隐藏必杀开关
@@ -58,6 +61,7 @@
     UI.closeModal();
     UI.hideInspector();
     app.mode = 'solo';
+    app.tutorial = false;
     app.game = null;
     showScreen('home');
     applyUltimateSetting(true);
@@ -71,6 +75,7 @@
     UI.ensureAudio();
     UI.clearToasts();
     app.mode = 'solo';
+    app.tutorial = false;
     const state = E.createGame({ playerClass: app.selectedClass, controllers: { ai: AI }, ultimatesEnabled: app.ultimatesEnabled });
     app.game = state;
     app.logCount = state.log.length;
@@ -292,6 +297,7 @@
   /* ---------------- 基础操作 ---------------- */
   /* ---------------- 基础操作 ---------------- */
   function endPlayerTurn() {
+    if (app.tutorial) return;
     const state = app.game;
     if (!state || state.phase !== 'play' || state.active !== 'player') return;
     if (app.mode === 'lan-guest') {
@@ -300,6 +306,33 @@
       guestSendAction('endTurn');
       return;
     }
+    const delayed = state.player.long.delayedCard;
+    if (delayed && delayed.delayedAtTurn < state.player.turnsTaken) {
+      UI.showDelayedPrompt(
+        delayed,
+        () => {
+          const ar = E.resolveDelayed(state, 'player', true);
+          if (!ar.ok) { UI.toast(ar.error, 'error'); return; }
+          resetTurnUi();
+          renderGame(true);
+          if (state.phase === 'gameover') { setTimeout(showEnd, 800); return; }
+          doEndPlayerTurn();
+        },
+        () => {
+          const pr = E.resolveDelayed(state, 'player', false);
+          if (!pr.ok) { UI.toast(pr.error, 'error'); return; }
+          resetTurnUi();
+          renderGame(true);
+          doEndPlayerTurn();
+        }
+      );
+      return;
+    }
+    doEndPlayerTurn();
+  }
+
+  function doEndPlayerTurn() {
+    const state = app.game;
     const r = E.endTurn(state);
     if (!r.ok) { UI.toast(r.error, 'error'); return; }
     resetTurnUi();
@@ -363,9 +396,21 @@
       renderGame(false);
       return;
     }
+    if (app.tutorial) {
+      if (app.tutorialCardPlayed) { UI.toast('请先看下一步教程提示', 'error'); return; }
+      const expected = tutorialSteps[app.tutorialStep];
+      if (expected && card.type !== expected.type) { UI.toast('请按照教程提示打出当前类别的卡牌', 'error'); return; }
+      const tr = E.playCard(state, 'player', uid, { choice });
+      if (!tr.ok) { UI.toast(tr.error, 'error'); return; }
+      app.tutorialCardPlayed = true;
+      renderGame(true);
+      setTimeout(tutorialAfterCard, 950);
+      return;
+    }
     const r = E.playCard(state, 'player', uid, { choice });
     if (!r.ok) { UI.toast(r.error, 'error'); app.guestBusy = false; return; }
     renderGame(true);
+    if (r.delayed) { UI.toast('【延授】「' + card.name + '」延迟到下回合出牌阶段最后', 'success'); return; }
     if (state.phase === 'gameover') setTimeout(showEnd, 850);
   }
 
@@ -396,6 +441,7 @@
 
   /* ---------------- 能力 ---------------- */
   function useAbility(id, onDone) {
+    if (app.tutorial) { if (onDone) onDone(); return; }
     const state = app.game;
     const done = () => { if (typeof onDone === 'function') onDone(); };
     if (!state) { done(); return; }
@@ -407,6 +453,46 @@
       if (!state.ai.hand.length) UI.toast('对方没有手牌');
       else UI.showReveal(state.ai.hand);
       done();
+      return;
+    }
+    if (id === 'divine') {
+      if (!state.ai.hand.length) {
+        const r = E.useDivine(state, 'player', {});
+        if (!r.ok) { UI.toast(r.error, 'error'); done(); return; }
+        renderGame(true);
+        done();
+        return;
+      }
+      UI.confirm({
+        title: '命定',
+        subtitle: '每局一次 · 弃置全部手牌',
+        html: '弃置全部手牌，并选择对方最多 2 张手牌放回其牌库底。对方手牌会持续公开。',
+        okLabel: '选择对方手牌',
+        danger: true,
+        onOk() {
+          UI.showMultiCardPicker({
+            title: '命定 · 选择对方手牌',
+            subtitle: '选择最多 2 张放回牌库底；取消则不选择',
+            cards: state.ai.hand.slice(),
+            min: 0,
+            max: 2,
+            confirmLabel: '放回牌库底',
+            onConfirm(uids) {
+              const r = E.useDivine(state, 'player', { opponentUids: uids });
+              if (!r.ok) { UI.toast(r.error, 'error'); done(); return; }
+              renderGame(true);
+              done();
+            },
+            onCancel() {
+              const r = E.useDivine(state, 'player', {});
+              if (!r.ok) { UI.toast(r.error, 'error'); done(); return; }
+              renderGame(true);
+              done();
+            },
+          });
+        },
+        onCancel: done,
+      });
       return;
     }
     if (id === 'cute') {
@@ -508,6 +594,30 @@
     renderGame(true);
     UI.Sound.play('ult');
     UI.toast('必杀发动：' + state.player.char.ultimateName, 'success');
+    if (state.pendingKuaishou) {
+      const pending = state.pendingKuaishou;
+      UI.showMultiCardPicker({
+        title: '神偷 · 对方牌库顶端三张',
+        subtitle: '宣言「' + (pending.declared ? (C.TYPE_META[pending.declared] || {}).label || pending.declared : '') + '」 · 选择 0~' + (pending.maxPick == null ? 2 : pending.maxPick) + ' 张；其余加入对方手牌',
+        cards: pending.cards.slice(),
+        min: 0,
+        max: pending.maxPick == null ? 2 : pending.maxPick,
+        confirmLabel: '确认选择',
+        onConfirm(uids) {
+          E.resolveKuaishou(state, uids);
+          state.pendingKuaishou = null;
+          renderGame(true);
+          done();
+        },
+        onCancel() {
+          E.resolveKuaishou(state, []);
+          state.pendingKuaishou = null;
+          renderGame(true);
+          done();
+        },
+      });
+      return;
+    }
     done();
   }
 
@@ -527,19 +637,13 @@
       okLabel: '发动必杀',
       danger: true,
       onOk() {
-        if (state.player.classId === 'yuyanjia') {
-          if (state.ai.hand.length) {
-            UI.showMultiCardPicker({
-              title: '命定 · 选择对方手牌',
-              subtitle: '选择最多 2 张放回对方牌库底；取消则不选择',
-              cards: state.ai.hand.slice(),
-              min: 0,
-              max: 2,
-              confirmLabel: '放回牌库底',
-              onConfirm(uids) { applyUltimate({ opponentUids: uids }, onDone); },
-              onCancel() { applyUltimate({}, onDone); },
-            });
-          } else applyUltimate({}, onDone);
+        if (state.player.classId === 'kuaishou') {
+          UI.showTypeChoice({
+            title: '神偷 · 宣言卡牌类型',
+            subtitle: '从对方牌库顶端摸 3 张牌',
+            onPick(type) { applyUltimate({ declaredType: type }, onDone); },
+            onCancel() { if (onDone) onDone(); },
+          });
           return;
         }
         if (cost.discard > 0) {
@@ -574,6 +678,15 @@
       okLabel: '发动必杀',
       danger: true,
       onOk() {
+        if (state.player.classId === 'kuaishou') {
+          UI.showTypeChoice({
+            title: '神偷 · 宣言卡牌类型',
+            subtitle: '由房主端执行',
+            onPick(type) { guestSendAction('ultimate', { declaredType: type }); if (onDone) onDone(); },
+            onCancel() { if (onDone) onDone(); },
+          });
+          return;
+        }
         if (cost.discard > 0) {
           UI.showMultiCardPicker({
             title: '必杀代价 · 选择弃置的牌',
@@ -593,6 +706,144 @@
     });
   }
 
+
+  /* ---------------- 新手教程对局 ---------------- */
+  const tutorialSteps = [
+    {
+      card: 'kuaizhan',
+      type: 'normal',
+      title: '普通攻击卡',
+      text: '普通攻击卡会造成普通伤害。双击「快斩」，对敌人造成 5 点伤害。',
+      tip: '注意：如果自己回合开始时对方有护盾，本回合普通攻击卡就不能打出。',
+    },
+    {
+      card: 'qingdun',
+      type: 'armor',
+      title: '护甲卡',
+      text: '护甲卡会获得护甲。双击「轻盾」，获得 3 点护甲。护甲可以抵挡破甲伤害，也会让普通伤害完全无效。',
+      tip: '普通护甲会在自己的下一个回合开始时消散。',
+    },
+    {
+      card: 'tiaoxi',
+      type: 'rest',
+      title: '休整卡',
+      text: '休整卡可以回复生命或摸牌。双击「调息」，回复 3 点生命。',
+      tip: '生命值很重要，合理使用休整卡可以延长对局。',
+      playerHp: 24,
+    },
+    {
+      card: 'zhongji',
+      type: 'break',
+      title: '破甲卡',
+      text: '破甲卡专门对付护盾。敌人现在有 3 点护甲，双击「重击」，先打破护甲，再用剩余伤害攻击。',
+      tip: '对方没有护盾时，破甲卡不能打出。',
+      aiArmor: 3,
+      aiHp: 25,
+    },
+  ];
+
+  function resetTutorialTemp(state) {
+    const t = state.player.temp;
+    Object.assign(t, {
+      skipDraw: false, skipKind: null, scavengeUid: null, werewolfJudge: false,
+      cuteUsed: false, selfHarm: 0, newbornValue: 0, playLimitBonus: 0,
+      damagePerCard: 0, armorBonus: 0, healBonus: 0, skipPlay: false, freePlayUids: [],
+      breakMultiplier: 1, ignoreArmorAll: false, damageReduction: 0,
+      armorValues: [], playedCount: 0, playedCards: [], normalDisabled: false,
+      wasAttacked: false, ultimate: false,
+    });
+    state.player.choices = {};
+    state.player.selection = [];
+    state.player.status.frozenTurn = 0;
+  }
+
+  function showTutorialGuide(step) {
+    const def = tutorialSteps[step];
+    const card = C.CARDS[def.card];
+    const catCards = C.CARD_LIST.filter((c) => c.type === def.type);
+    UI.showModal({
+      title: '新手教程 · 第 ' + (step + 1) + ' / 4 步',
+      subtitle: def.title,
+      narrow: true,
+      dismissable: false,
+      body: `<div class="tut-lesson">
+        <img src="${card.img}" alt="${esc(card.name)}" />
+        <div><p>${esc(def.text)}</p><p class="tut-tip">${esc(def.tip)}</p><p class="tut-action">本类别全部卡牌已置入手中：${catCards.map((c) => '「' + c.name + '」').join('')}</p></div>
+      </div>`,
+      footer: [{ label: '开始演示', variant: 'primary', onClick: () => UI.closeModal() }],
+    });
+  }
+
+  function applyTutorialStep(step) {
+    const state = app.game;
+    if (!state || !app.tutorial) return;
+    const def = tutorialSteps[step];
+    app.tutorialStep = step;
+    state.tutorial = true;
+    state.tutorialStep = step;
+    state.active = 'player';
+    state.phase = 'play';
+    state.lastPlay = null;
+    state.lastShieldHit = null;
+    resetTutorialTemp(state);
+    if (def.playerHp != null) state.player.hp = def.playerHp;
+    if (def.aiHp != null) state.ai.hp = def.aiHp;
+    state.ai.armor = def.aiArmor || 0;
+    state.ai.extraArmor = 0;
+    state.ai.hand = [];
+    state.player.hand = C.CARD_LIST.filter((c) => c.type === def.type).map((c) => E.makeCard(state, c.id));
+    state.player.discard = [];
+    app.tutorialCardPlayed = false;
+    renderGame(false);
+    showTutorialGuide(step);
+  }
+
+  function tutorialAfterCard() {
+    if (!app.tutorial) return;
+    const next = app.tutorialStep + 1;
+    if (next < tutorialSteps.length) {
+      applyTutorialStep(next);
+      return;
+    }
+    UI.showModal({
+      title: '教程完成',
+      subtitle: '你已经学会了四种基础卡牌',
+      body: `<div class="tut-lesson tut-complete"><div><p><b>普通攻击</b>：无盾时造成伤害。</p><p><b>护甲</b>：抵挡破甲、让普通伤害无效，下回合开始消散。</p><p><b>休整</b>：回复生命或摸牌。</p><p><b>破甲</b>：先打护盾，再扣剩余生命。</p><p class="tut-tip">正式对局中，回合开始会自动摸牌，准备能力会弹窗询问；单击查看、双击出牌。</p></div></div>`,
+      footer: [{ label: '返回首页', variant: 'primary', onClick: () => { UI.closeModal(); showHome(); } }],
+      dismissable: false,
+    });
+  }
+
+  function startTutorialGame() {
+    stopLan();
+    UI.closeModal();
+    UI.clearToasts();
+    const state = E.createGame({ playerClass: 'fanren', aiClass: 'fanren' });
+    const r = E.startGame(state);
+    if (!r.ok) { UI.toast(r.error, 'error'); return; }
+    state.tutorial = true;
+    state.tutorialStep = 0;
+    state.ai.hand = [];
+    state.ai.armor = 0;
+    state.ai.extraArmor = 0;
+    state.player.hand = [];
+    state.player.discard = [];
+    state.player.armor = 0;
+    state.player.extraArmor = 0;
+    state.player.hp = state.player.maxHp;
+    state.ai.hp = state.ai.maxHp;
+    app.mode = 'tutorial';
+    app.tutorial = true;
+    app.tutorialStep = 0;
+    app.tutorialCardPlayed = false;
+    app.game = state;
+    app.inspectUid = null;
+    app.lastCardClick = { uid: null, at: 0 };
+    UI.resetVisualState();
+    showScreen('game');
+    renderGame(false);
+    applyTutorialStep(0);
+  }
 
   /* ---------------- 局域网联机 ---------------- */
   function stopLan() {
@@ -947,10 +1198,13 @@
       result = E.endTurn(state);
     } else if (action.kind === 'prepAbility') {
       result = E.usePrepAbility(state, 'ai', action.ability, action.payload || {});
+    } else if (action.kind === 'divine') {
+      result = E.useDivine(state, 'ai', { opponentUids: action.opponentUids });
     } else if (action.kind === 'ultimate') {
       result = E.useUltimate(state, 'ai', {
         discardUids: action.discardUids,
         opponentUids: action.opponentUids,
+        declaredType: action.declaredType,
       });
     } else {
       sendGuestError('未知操作');
@@ -1023,6 +1277,18 @@
     if (id === 'viewOpponent') {
       guestSendAction('viewOpponent');
       done();
+      return;
+    }
+    if (id === 'divine') {
+      UI.confirm({
+        title: '命定',
+        subtitle: '每局一次 · 弃置全部手牌',
+        html: '弃置全部手牌，由房主端将对方最多 2 张手牌放回牌库底。对方手牌会持续公开。',
+        okLabel: '发动命定',
+        danger: true,
+        onOk() { guestSendAction('divine'); done(); },
+        onCancel: done,
+      });
       return;
     }
     if (id === 'cute') {
@@ -1140,7 +1406,7 @@
       if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
       UI.Sound.play('click');
     });
-    $('#btn-tutorial').addEventListener('click', UI.showTutorial);
+    $('#btn-tutorial').addEventListener('click', () => UI.showTutorial(startTutorialGame));
     $('#btn-rules-home').addEventListener('click', UI.showRules);
     $('#btn-rules-game').addEventListener('click', UI.showRules);
     $('#btn-sound').addEventListener('click', toggleSound);
@@ -1211,6 +1477,17 @@
     if (!seen) {
       setTimeout(() => UI.toast('选择职业 → 开始对局。回合开始自动摸牌；单击查看、双击出牌，每张牌立即结算。'), 700);
     }
+    // 公告：优先读取 assets/inform/in.txt；file:// 直接打开时 fetch 会被浏览器拦截，
+    // 因此提供一份与当前 in.txt 一致的兜底文本，保证双击 index.html 也能看到公告。
+    const fallbackAnnouncement = '新增角色\n增加动画\n修改了一部分角色\n\n求赞助喵....';
+    const showAnnouncementFallback = () => setTimeout(() => UI.showAnnouncement(fallbackAnnouncement), 420);
+    fetch('assets/inform/in.txt', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.text() : Promise.reject(new Error('no announcement file'))))
+      .then((text) => {
+        if (text.trim()) setTimeout(() => UI.showAnnouncement(text), 420);
+        else showAnnouncementFallback();
+      })
+      .catch(showAnnouncementFallback);
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);

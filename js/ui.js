@@ -21,6 +21,8 @@
     lastPlaySeq: 0,
     lastArmor: { player: null, ai: null },
     lastShieldHitSeq: 0,
+    lastKuaishouSeq: 0,
+    lastKuaishouUltSeq: 0,
     inspectUid: null,
     playRevealTimer: null,
   };
@@ -347,6 +349,11 @@
     if (side.extraArmor > 0) chips.push(['额外护盾 ' + side.extraArmor, 'blue']);
     if (side.long.sameSorrow) chips.push(['同殇', 'blue']);
     if (side.long.allSeeing) chips.push(['全知', 'green']);
+    if (side.long.babyBonusMaxHp > 0) chips.push(['额外生命上限 ' + side.long.babyBonusMaxHp, 'green']);
+    if (side.long.fanrenGuardUntil >= state.turn) chips.push(['凡躯护佑', 'blue']);
+    if (side.long.chensiyuTax) chips.push(['摸牌税', 'red']);
+    if (side.temp.skipPlay) chips.push(['跳过出牌', 'red']);
+    if (side.long.delayedCard) chips.push(['延授 ' + side.long.delayedCard.card.name + ' +' + side.long.delayedCard.boost, 'gold']);
     if (side.status.pendingDrawPenalty > 0) chips.push(['下回合摸牌-' + side.status.pendingDrawPenalty, '']);
     if (side.status.drawPenalty > 0) chips.push(['本回合摸牌-' + side.status.drawPenalty, '']);
     if (side.deck.length === 0) chips.push(['枯牌', 'red']);
@@ -415,9 +422,9 @@
       ? (state.phase === 'play' ? `已出 ${(p.temp.playedCards || []).length} / ${global.DD_ENGINE.getPlayLimit(state, 'player')}` : `${p.hand.length} 张手牌`)
       : '等待对手行动');
     const aiArt = $('#ai-art');
-    if (aiArt) aiArt.innerHTML = `<img src="${portrait(a.char)}" alt="${esc(a.name)}"><span class="art-name">${esc(a.name)}</span><span class="art-class">${esc(a.char.tags[0] || '')}</span>`;
+    if (aiArt) aiArt.innerHTML = `<img src="${a.char.originalImg || portrait(a.char)}" alt="${esc(a.name)}">`;
     const pArt = $('#player-art');
-    if (pArt) pArt.innerHTML = `<img src="${portrait(p.char)}" alt="${esc(p.name)}"><span class="art-name">${esc(p.name)}</span><span class="art-class">${esc(p.char.tags[0] || '')}</span>`;
+    if (pArt) pArt.innerHTML = `<img src="${p.char.originalImg || portrait(p.char)}" alt="${esc(p.name)}">`;
     const aiDuel = $('#duel-ai-avatar'); const pDuel = $('#duel-player-avatar');
     if (aiDuel) aiDuel.innerHTML = `<img src="${portrait(a.char)}" alt="${esc(a.name)}" />`;
     if (pDuel) pDuel.innerHTML = `<img src="${portrait(p.char)}" alt="${esc(p.name)}" />`;
@@ -488,7 +495,9 @@
     // 操作按钮
     const turnActions = $('#turn-actions');
     let taHtml = '';
-    if (myTurn && state.phase === 'prepare') {
+    if (state.tutorial) {
+      taHtml = `<span class="turn-wait">新手教程进行中…</span>`;
+    } else if (myTurn && state.phase === 'prepare') {
       taHtml = `<span class="turn-wait">准备阶段…</span>`;
     } else if (myTurn && state.phase === 'play') {
       taHtml = `<button type="button" class="turn-btn primary" data-action="commit">结束回合</button>`;
@@ -518,6 +527,15 @@
       showPlayReveal(state.lastPlay, state);
     }
     // 护盾受击 / 破碎（由引擎事件驱动，普通伤害被盾完全挡下也会触发）
+    if (state.lastKuaishouUlt && state.lastKuaishouUlt.seq !== UI.lastKuaishouUltSeq) {
+      UI.lastKuaishouUltSeq = state.lastKuaishouUlt.seq;
+      // 有选牌弹窗时直接由选牌界面展示三张牌，避免连续弹两个窗。
+      if (!state.pendingKuaishou) UI.showKuaishouUltReveal(state.lastKuaishouUlt);
+    }
+    if (state.lastKuaishou && state.lastKuaishou.seq !== UI.lastKuaishouSeq) {
+      UI.lastKuaishouSeq = state.lastKuaishou.seq;
+      UI.showKuaishouReveal(state.lastKuaishou);
+    }
     if (state.lastShieldHit && state.lastShieldHit.seq !== UI.lastShieldHitSeq) {
       UI.lastShieldHitSeq = state.lastShieldHit.seq;
       if (state.lastShieldHit.broken) shieldShatter(state.lastShieldHit.sideId);
@@ -630,6 +648,8 @@
     UI.lastPlaySeq = 0;
     UI.lastArmor = { player: null, ai: null };
     UI.lastShieldHitSeq = 0;
+    UI.lastKuaishouSeq = 0;
+    UI.lastKuaishouUltSeq = 0;
     UI.inspectUid = null;
     UI.hideInspector();
     const pr = $('#play-reveal'); if (pr) { pr.classList.add('hidden'); pr.classList.remove('out'); }
@@ -647,17 +667,18 @@
     } else {
       hand.innerHTML = p.hand.map((card) => {
         const inspected = opts.inspectUid === card.uid;
+        const free = Array.isArray(p.temp.freePlayUids) && p.temp.freePlayUids.indexOf(card.uid) >= 0;
         const info = global.DD_ENGINE.playableInfo(state, p, card);
         const locked = state.phase !== 'play' || state.active !== p.id;
         const disabled = !locked && !info.ok;
         const meta = typeMeta[card.type];
         const reason = info.ok ? '' : info.reason;
         const valueLabel = card.type === 'rest' && card.id === 'ningshen' ? '2' : (card.type === 'armor' || card.type === 'rest' ? '+' + card.value : card.value);
-        return `<button type="button" class="card ${inspected ? 'inspected' : ''} ${disabled ? 'disabled' : ''}" data-uid="${esc(card.uid)}" aria-pressed="${inspected}" ${locked ? 'data-locked="1"' : ''}>
+        return `<button type="button" class="card ${inspected ? 'inspected' : ''} ${free ? 'free-play' : ''} ${disabled ? 'disabled' : ''}" data-uid="${esc(card.uid)}" aria-pressed="${inspected}" ${locked ? 'data-locked="1"' : ''}>
           <span class="card-inner"><img src="${card.img}" alt="${esc(card.name)}" loading="lazy" /></span>
           <span class="card-badge ${card.type}">${esc(meta.label)}</span>
           <span class="card-value ${card.type}">${valueLabel}</span>
-          <span class="card-tooltip"><b>${esc(card.name)}</b><span class="tt-type">${esc(meta.label)}${reason ? ' · ' + esc(reason) : ''}</span>${esc(card.desc)}</span>
+          ${free ? '<span class="card-free-badge">免</span>' : ''}<span class="card-tooltip"><b>${esc(card.name)}</b><span class="tt-type">${esc(meta.label)}${reason ? ' · ' + esc(reason) : ''}</span>${esc(card.desc)}</span>
         </button>`;
       }).join('');
     }
@@ -708,6 +729,7 @@
     if (info.cute) add('cute', '💗 可爱即是正义');
     if (info.meditation) add('meditation', '🍢 烧烤摸 3');
     if (info.withered) add('withered', '🔄 竭泽换牌');
+    if (info.divine) add('divine', '🔮 命定');
     if (info.viewOpponent) add('viewOpponent', '👁 查看对方手牌');
     if (info.magicianSkip) add('magicianSkip', `${p.temp.skipDraw ? '✓ ' : ''}⏭ 跳过摸牌`, p.temp.skipDraw);
     if (info.scavenge) add('scavenge', '♻ 开拓拾牌');
@@ -764,16 +786,17 @@
     const label = $('#commit-label');
     const sub = $('#commit-sub');
     const myTurn = state.active === 'player';
-    const canPlay = myTurn && state.phase === 'play';
+    const canPlay = !state.tutorial && myTurn && state.phase === 'play';
     const played = (p.temp.playedCards || []).length;
     const limit = global.DD_ENGINE.getPlayLimit(state, 'player');
     if (btn) btn.disabled = !canPlay;
     if (label) {
-      if (!myTurn) label.textContent = '对手回合';
+      if (state.tutorial) label.textContent = '教程进行中';
+      else if (!myTurn) label.textContent = '对手回合';
       else if (!canPlay) label.textContent = state.phase === 'prepare' ? '等待摸牌' : '等待结算';
       else label.textContent = '结束回合';
     }
-    if (sub) sub.textContent = canPlay ? `已出 ${played} / ${limit} 张 · 点击结束本回合` : (myTurn ? '当前不可操作' : '等待对手行动');
+    if (sub) sub.textContent = state.tutorial ? '按教程提示双击手牌' : (canPlay ? `已出 ${played} / ${limit} 张 · 点击结束本回合` : (myTurn ? '当前不可操作' : '等待对手行动'));
     const clear = $('#btn-clear-select');
     if (clear) clear.disabled = !UI.inspectUid;
   }
@@ -956,7 +979,7 @@
     return root;
   };
 
-  UI.showTutorial = function () {
+  UI.showTutorial = function (onStart) {
     UI.showModal({
       title: '新手教程',
       subtitle: '30 秒快速上手',
@@ -970,7 +993,99 @@
           <div class="tut-step"><b>5. 必杀开关</b><p>在首页连续点击预言家 5 下，可以切换本局是否启用必杀。</p></div>
           <div class="tut-step"><b>6. 联机</b><p>局域网联机需要电脑运行「手机访问-局域网服务器.bat」，两台设备打开同一网址。</p></div>
         </div>`,
-      footer: [{ label: '开始游戏', variant: 'primary', onClick: () => UI.closeModal() }],
+      footer: [{ label: '开始游戏', variant: 'primary', onClick: () => { UI.closeModal(); if (onStart) onStart(); } }],
+    });
+  };
+
+  UI.showTypeChoice = function (opts) {
+    const types = [
+      { id: 'normal', label: '普通攻击卡' },
+      { id: 'break', label: '破甲卡' },
+      { id: 'rest', label: '休整功能卡' },
+      { id: 'armor', label: '护甲卡' },
+    ];
+    UI.showModal({
+      title: opts.title || '宣言卡牌类型',
+      subtitle: opts.subtitle || '',
+      narrow: true,
+      body: `<div class="prep-actions">${types.map((t) => `<button type="button" class="prep-action" data-type-choice="${t.id}"><b>${t.label}</b></button>`).join('')}</div>`,
+      footer: [{ label: '取消', onClick: () => { UI.closeModal(); if (opts.onCancel) opts.onCancel(); } }],
+      onMount(root) {
+        $$('[data-type-choice]', root).forEach((btn) => btn.addEventListener('click', () => {
+          UI.closeModal();
+          if (opts.onPick) opts.onPick(btn.dataset.typeChoice);
+        }));
+      },
+    });
+  };
+
+  UI.showAnnouncement = function (text) {
+    const lines = String(text || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    if (!lines.length) return;
+    UI.showModal({
+      title: '公告',
+      subtitle: '欢迎来到《我的刀盾》',
+      narrow: true,
+      body: `<div class="announcement">${lines.map((l) => `<p>${esc(l)}</p>`).join('')}</div>`,
+      footer: [{ label: '知道了', variant: 'primary', onClick: () => UI.closeModal() }],
+    });
+  };
+
+  UI.showKuaishouUltReveal = function (ev) {
+    if (!ev) return;
+    const cards = ev.cards || [];
+    UI.showModal({
+      title: '神偷 · 对方牌库顶端三张',
+      subtitle: '宣言「' + ev.declaredLabel + '」 · 符合 ' + ev.matches + ' 张 · 可选 ' + ev.maxPick + ' 张',
+      narrow: true,
+      body: `<div class="ks-ult-grid">${cards.map((c) => `
+        <div class="ks-ult-card ${c.type === ev.declared ? 'matched' : ''}">
+          <img src="${c.img}" alt="${esc(c.name)}" />
+          <b>${esc(c.name)}</b>
+          <i>${esc(c.type === 'normal' ? '攻击' : c.type === 'armor' ? '护盾' : c.type === 'break' ? '破甲' : '休整')} · ${c.value}</i>
+        </div>`).join('')}</div>`,
+      footer: [{ label: '继续', variant: 'primary', onClick: () => UI.closeModal() }],
+    });
+  };
+
+  UI.showKuaishouReveal = function (ev) {
+    if (!ev) return;
+    function cardBox(label, card, extraClass) {
+      if (!card) return `<div class="ks-card ${extraClass || ''}"><span>${label}</span><div class="ks-empty">牌库为空</div></div>`;
+      return `<div class="ks-card ${extraClass || ''}"><span>${label}</span><img src="${card.img}" alt="${esc(card.name)}" /><b>${esc(card.name)}</b><i>${esc(card.type === 'normal' ? '攻击' : card.type === 'armor' ? '护盾' : card.type === 'break' ? '破甲' : '休整')} · ${card.value}</i></div>`;
+    }
+    UI.showModal({
+      title: '掠影 · 凝神',
+      subtitle: ev.same ? '两张牌相同！触发额外效果' : '从双方牌库顶端各拿 1 张牌',
+      narrow: true,
+      body: `<div class="ks-reveal">
+        ${cardBox('对方牌库顶端', ev.enemy)}
+        <div class="ks-same">${ev.same ? '相同' : '不同'}</div>
+        ${cardBox('自己牌库顶端', ev.own)}
+        ${ev.extra ? `<div class="ks-extra">${cardBox(ev.autoPlayed ? '额外摸到 · 已自动打出' : '额外摸到', ev.extra, 'ks-auto')}</div>` : ''}
+      </div>`,
+      footer: [{ label: '继续', variant: 'primary', onClick: () => UI.closeModal() }],
+    });
+  };
+
+  UI.showDelayedPrompt = function (delayed, onActivate, onPostpone) {
+    const card = delayed.card;
+    const value = card.value + delayed.boost;
+    UI.showModal({
+      title: '延授 · ' + card.name,
+      subtitle: '上回合延迟的牌已到结算时机',
+      narrow: true,
+      dismissable: false,
+      body: `<div class="tut-lesson">
+        <img src="${card.img}" alt="${esc(card.name)}" />
+        <div><p>当前数值：<b>${value}</b>${delayed.boost ? '（原 ' + card.value + '，已蓄力 +' + delayed.boost + '）' : ''}</p>
+        <p class="tut-tip">直接发动：立即结算此牌效果。</p>
+        <p class="tut-tip">本回合不发动：此牌 +3（伤害/护盾/回血/抽牌数），继续延迟到下次回合结束。</p></div>
+      </div>`,
+      footer: [
+        { label: '本回合不发动 · +3', onClick: () => { UI.closeModal(); onPostpone(); } },
+        { label: '直接发动', variant: 'primary', onClick: () => { UI.closeModal(); onActivate(); } },
+      ],
     });
   };
 
