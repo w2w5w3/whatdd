@@ -17,6 +17,12 @@
     soundEnabled: safeGet('dd_sound') !== '0',
     audioCtx: null,
     lastLogCount: 0,
+    lastDrawSeq: 0,
+    lastPlaySeq: 0,
+    lastArmor: { player: null, ai: null },
+    lastShieldHitSeq: 0,
+    inspectUid: null,
+    playRevealTimer: null,
   };
 
   /* ================= 音效 ================= */
@@ -53,6 +59,7 @@
         case 'select': tone(640, 0.06, 'triangle', 0.04); tone(880, 0.08, 'triangle', 0.025, 0.05); break;
         case 'deselect': tone(430, 0.04, 'triangle', 0.025); break;
         case 'draw': tone(460, 0.08, 'sine', 0.035); tone(680, 0.12, 'sine', 0.03, 0.06); break;
+        case 'play': tone(300, 0.06, 'triangle', 0.04); tone(540, 0.14, 'triangle', 0.03, 0.05); break;
         case 'armor': tone(260, 0.14, 'sine', 0.05); tone(390, 0.18, 'sine', 0.03, 0.05); break;
         case 'hit': tone(120, 0.12, 'sawtooth', 0.05, 0, 50); tone(70, 0.16, 'square', 0.035); break;
         case 'heal': tone(540, 0.11, 'sine', 0.04); tone(810, 0.14, 'sine', 0.03, 0.07); break;
@@ -101,7 +108,7 @@
           <button class="sp-detail" type="button" id="btn-class-detail">详情 →</button>
         </div>
         <div class="sp-passive">【${esc(cls.passiveName)}】${esc(cls.passiveText)}</div>
-        <div class="sp-ult">必杀 · ${esc(cls.ultimateName)}（${esc(cls.ultimateCost)}）</div>
+        <div class="sp-ult">必杀 · ${esc(cls.ultimateName)}（${esc(cls.ultimateCost)}）${UI.ultimatesEnabled === false ? ' · <b>已关闭</b>' : ''}</div>
       </div>`;
     const btn = $('#btn-class-detail');
     if (btn) btn.addEventListener('click', () => UI.showClass(selectedId));
@@ -243,6 +250,7 @@
               <h4>【${esc(cls.ultimateName)}】<span>限定必杀 · 每局一次</span></h4>
               <p>${esc(cls.ultimateText)}</p>
               <span class="cost-pill">代价：${esc(cls.ultimateCost)}</span>
+              ${UI.ultimatesEnabled === false ? '<div class="ultimate-hidden-note">🔒 隐藏开关已关闭必杀技</div>' : ''}
             </div>
           </div>
         </div>`,
@@ -273,13 +281,13 @@
     const cls = state.player.char;
     let body = '';
     if (chosenKind === 'poison') {
+      const cats = C.POISON_CATEGORIES || [];
       body = `
-        <p class="setup-lead">你是女巫。对一种牌投毒：对手每次摸到该牌时受到 <b>1 点真实伤害</b>。整局只能选择一次。</p>
+        <p class="setup-lead">你是女巫。选择一种<strong>卡牌类别</strong>投毒：对手每次摸到该类别的牌时受到 <b>1 点真实伤害</b>。整局只能选择一次。</p>
         <div class="setup-cards">
-          ${C.CARD_LIST.map((card) => `
-            <button type="button" class="setup-card" data-poison="${card.id}">
-              <img src="${card.img}" alt="${esc(card.name)}" loading="lazy" />
-              <b>${esc(card.name)}</b>
+          ${cats.map((cat) => `
+            <button type="button" class="setup-card" data-poison="${cat.id}">
+              <b>${esc(cat.name)}</b>
             </button>`).join('')}
         </div>`;
     } else if (chosenKind === 'wolf') {
@@ -345,8 +353,10 @@
     if (side.classId === 'sanyueqi' && side.long.cuteWindowTurn === side.turnsTaken) chips.push(['可爱就绪', 'green']);
     if (side.classId === 'langren' && side.long.wolfMode === 'A' && side.hp <= 8) chips.push(['血月+1', 'red']);
     if (side.classId === 'langren' && side.long.wolfMode) chips.push([side.long.wolfMode === 'A' ? '血月模式' : '月嚎·B', '']);
-    if (side.classId === 'nvwu' && side.long.poisonType && side.id === state.player.id) chips.push(['毒咒:' + (C.CARDS[side.long.poisonType] ? C.CARDS[side.long.poisonType].name : ''), 'green']);
-    if (side.classId === 'yuyanjia' && side.long.destinyUsed) chips.push(['命定已用', '']);
+    if (side.classId === 'nvwu' && side.long.poisonType && side.id === state.player.id) {
+      const cat = (C.POISON_CATEGORIES || []).find((x) => x.id === side.long.poisonType);
+      chips.push(['毒咒:' + (cat ? cat.name : side.long.poisonType), 'green']);
+    }
     return chips.map(([t, k]) => `<span class="status-chip ${k}">${esc(t)}</span>`).join('');
   }
   function E_isWolf(state, side) { return (side.status.wolfFormUntilTurn || 0) > side.turnsTaken; }
@@ -369,9 +379,9 @@
     if (kicker) kicker.textContent = phaseLabel + ' · ' + activeLabel;
     const hint = $('#phase-hint');
     const hints = {
-      prepare: myTurn ? '使用准备能力，然后进入摸牌阶段' : '对手正在准备…',
+      prepare: myTurn ? '准备阶段：可发动能力，随后自动摸牌' : '对手正在准备…',
       draw: '正在摸牌…',
-      play: myTurn ? '选择至多 ' + global.DD_ENGINE.getPlayLimit(state, 'player') + ' 张牌，然后结束出牌' : '对手正在出牌…',
+      play: myTurn ? '双击手牌打出，最多 ' + global.DD_ENGINE.getPlayLimit(state, 'player') + ' 张；可随时结束回合' : '对手正在出牌…',
       result: '查看本回合结算结果',
       gameover: '对局结束',
     };
@@ -402,7 +412,7 @@
     setText('#ai-hand-count', a.hand.length);
     setText('#player-hand-count', p.hand.length);
     setText('#hand-limit', myTurn
-      ? (state.phase === 'play' ? `${p.selection.length} / ${global.DD_ENGINE.getPlayLimit(state, 'player')}` : `${p.hand.length} 张手牌`)
+      ? (state.phase === 'play' ? `已出 ${(p.temp.playedCards || []).length} / ${global.DD_ENGINE.getPlayLimit(state, 'player')}` : `${p.hand.length} 张手牌`)
       : '等待对手行动');
     const aiArt = $('#ai-art');
     if (aiArt) aiArt.innerHTML = `<img src="${portrait(a.char)}" alt="${esc(a.name)}"><span class="art-name">${esc(a.name)}</span><span class="art-class">${esc(a.char.tags[0] || '')}</span>`;
@@ -417,12 +427,39 @@
     $('#player-status').innerHTML = statusChips(state, p);
     const skillHtml = (side) => `
       <div class="fs-passive"><b>【${esc(side.char.passiveName)}】</b><span>${esc(side.char.passiveText)}</span></div>
-      <div class="fs-ult">必杀 · <b>${esc(side.char.ultimateName)}</b> <span>${side.long.ultimateUsed ? '已使用' : '未使用'}</span></div>`;
+      <div class="fs-ult">必杀 · <b>${esc(side.char.ultimateName)}</b> <span>${state.ultimatesEnabled === false ? '本局关闭' : (side.long.ultimateUsed ? '已使用' : '未使用')}</span></div>`;
     $('#ai-skill').innerHTML = skillHtml(a);
     $('#player-skill').innerHTML = skillHtml(p);
-    const backCount = Math.min(a.hand.length, 9);
-    $('#ai-hand-back').innerHTML = Array.from({ length: backCount }, () => '<span class="foe-card-back"></span>').join('')
-      + (a.hand.length > 9 ? `<span class="more">+${a.hand.length - 9}</span>` : '');
+    const renderBacks = (id, count) => {
+      const el = $('#' + id);
+      if (!el) return;
+      const n = Math.min(count, 8);
+      el.innerHTML = Array.from({ length: n }, () => '<img class="mini-back" src="assets/back.webp" alt="" />').join('')
+        + (count > n ? `<span class="back-more">+${count - n}</span>` : '');
+    };
+    renderBacks('ai-hand-backs', a.hand.length);
+    renderBacks('player-hand-backs', p.hand.length);
+
+    // 船长计数器
+    [['ai', a], ['player', p]].forEach(([id, side]) => {
+      const cap = $('#' + id + '-captain');
+      if (!cap) return;
+      cap.classList.toggle('hidden', side.classId !== 'chuanzhang');
+      if (side.classId === 'chuanzhang') {
+        const prog = side.long.captainProgress || 0;
+        cap.innerHTML = `<b>${prog}/2</b><small>出/弃</small>`;
+        cap.title = '每打出或弃置 2 张牌失去 1 点生命；每获得 1 张牌回复 1 点生命（累计 ' + (side.long.captainCount || 0) + ' 张）';
+      }
+    });
+
+    // 护盾光罩
+    [['ai', a], ['player', p]].forEach(([id, side]) => {
+      const aura = $('#' + id + '-shield-aura');
+      if (!aura) return;
+      const total = global.DD_ENGINE.totalArmor(side);
+      aura.classList.toggle('hidden', total <= 0);
+      aura.className = 'shield-aura' + (total <= 0 ? ' hidden' : '') + ' aura-' + ((side.armor > 0 ? side.long.armorTier : side.long.extraArmorTier) || side.long.armorTier || 'white');
+    });
     // 点击角色查看详情
     ['#fighter-ai', '#fighter-player', '#duel-ai-avatar', '#duel-player-avatar'].forEach((sel) => {
       const el = $(sel);
@@ -443,8 +480,8 @@
       const names = state.seerAll[p.id].map((c) => c.name).join('、');
       intelHtml += `<span>👁 <b>全知</b></span><span>对手手牌：<b>${esc(names || '无')}</b></span>`;
     }
-    if (p.classId === 'yuyanjia' && p.long.destinyPendingCardId) {
-      intelHtml += `<span>📌 命定：<b>${esc(C.CARDS[p.long.destinyPendingCardId] ? C.CARDS[p.long.destinyPendingCardId].name : '')}</b></span>`;
+    if (p.long.viewOpponent && state.ai.hand.length && state.ai.hand.every((c) => !c.hidden)) {
+      intelHtml += `<span>👁 <b>命定</b></span><span>对方手牌：<b>${esc(state.ai.hand.map((c) => c.name).join('、'))}</b></span>`;
     }
     if (intel) intel.innerHTML = intelHtml;
 
@@ -452,9 +489,9 @@
     const turnActions = $('#turn-actions');
     let taHtml = '';
     if (myTurn && state.phase === 'prepare') {
-      taHtml = `<button type="button" class="turn-btn primary" data-action="draw">进入摸牌阶段 →</button>`;
+      taHtml = `<span class="turn-wait">准备阶段…</span>`;
     } else if (myTurn && state.phase === 'play') {
-      taHtml = `<button type="button" class="turn-btn primary" data-action="commit">结束出牌</button>`;
+      taHtml = `<button type="button" class="turn-btn primary" data-action="commit">结束回合</button>`;
     } else if (!myTurn && (state.phase === 'prepare' || state.phase === 'play')) {
       taHtml = `<span class="turn-wait">⏳ 对手行动中…</span>`;
     }
@@ -465,7 +502,140 @@
     renderAbilities(state);
     renderFeed(state, opts);
     updateCommandBar(state);
+    renderVisualEvents(state, opts);
   };
+
+  function renderVisualEvents(state, opts) {
+    const p = state.player;
+    // 抽卡动画
+    if (state.lastDraw && state.lastDraw.seq !== UI.lastDrawSeq) {
+      UI.lastDrawSeq = state.lastDraw.seq;
+      if (state.lastDraw.count > 0) animateDraw(state.lastDraw.sideId, state.lastDraw.count);
+    }
+    // 打出卡牌详情
+    if (state.lastPlay && state.lastPlay.seq !== UI.lastPlaySeq) {
+      UI.lastPlaySeq = state.lastPlay.seq;
+      showPlayReveal(state.lastPlay, state);
+    }
+    // 护盾受击 / 破碎（由引擎事件驱动，普通伤害被盾完全挡下也会触发）
+    if (state.lastShieldHit && state.lastShieldHit.seq !== UI.lastShieldHitSeq) {
+      UI.lastShieldHitSeq = state.lastShieldHit.seq;
+      if (state.lastShieldHit.broken) shieldShatter(state.lastShieldHit.sideId);
+      else shieldHit(state.lastShieldHit.sideId);
+    }
+    [['ai', state.ai], ['player', p]].forEach(([id, side]) => {
+      UI.lastArmor[id] = global.DD_ENGINE.totalArmor(side);
+    });
+    // HP 变化：受击 / 回复动画与音效
+    [['ai', state.ai], ['player', p]].forEach(([id, side]) => {
+      const prev = UI.lastHp[id];
+      if (prev != null && prev !== side.hp) animateHpChange(id, side.hp - prev);
+      UI.lastHp[id] = side.hp;
+    });
+  }
+
+  function animateDraw(sideId, count) {
+    const layer = $('#draw-anim');
+    if (!layer) return;
+    const target = sideId === 'player' ? ($('#hand-scroll') || $('#fighter-player')) : ($('#ai-hand-back') || $('#fighter-ai'));
+    const tr = target ? target.getBoundingClientRect() : { left: innerWidth / 2, top: sideId === 'player' ? innerHeight - 160 : 160, width: 0, height: 0 };
+    const sx = innerWidth / 2;
+    const sy = innerHeight * 0.42;
+    const tx = tr.left + tr.width / 2;
+    const ty = tr.top + tr.height / 2;
+    const n = Math.max(1, Math.min(3, count));
+    for (let i = 0; i < n; i += 1) {
+      const el = document.createElement('div');
+      el.className = 'draw-card';
+      el.style.left = (sx + (i - (n - 1) / 2) * 16) + 'px';
+      el.style.top = sy + 'px';
+      el.style.setProperty('--rot', ((i - (n - 1) / 2) * 6) + 'deg');
+      el.style.setProperty('--dx', (tx - sx) + 'px');
+      el.style.setProperty('--dy', (ty - sy) + 'px');
+      el.style.animationDelay = (i * 0.07) + 's';
+      layer.appendChild(el);
+      setTimeout(() => el.remove(), 1000 + i * 80);
+    }
+    Sound.play('draw');
+  }
+
+  function animateHpChange(sideId, delta) {
+    if (!delta) return;
+    const el = $('#fighter-' + sideId);
+    const hit = delta < 0;
+    if (el) {
+      el.classList.remove('hit-shake');
+      void el.offsetWidth;
+      el.classList.add('hit-shake');
+      setTimeout(() => el.classList.remove('hit-shake'), 500);
+    }
+    if (hit) {
+      const screen = $('#screen-game');
+      if (screen) {
+        screen.classList.remove('screen-shake');
+        void screen.offsetWidth;
+        screen.classList.add('screen-shake');
+        setTimeout(() => screen.classList.remove('screen-shake'), 420);
+      }
+    }
+    const rect = el ? el.getBoundingClientRect() : { left: innerWidth / 2, top: innerHeight / 2, width: 0, height: 0 };
+    const float = document.createElement('div');
+    float.className = 'hit-float' + (hit ? '' : ' heal');
+    float.textContent = (delta > 0 ? '+' : '') + delta;
+    float.style.left = (rect.left + rect.width * 0.5) + 'px';
+    float.style.top = (rect.top + Math.min(rect.height * 0.35, 140)) + 'px';
+    document.body.appendChild(float);
+    setTimeout(() => float.remove(), 900);
+    Sound.play(hit ? 'hit' : 'heal');
+  }
+
+  function shieldHit(sideId) {
+    const aura = $('#' + sideId + '-shield-aura');
+    if (aura) {
+      aura.classList.remove('aura-hit');
+      void aura.offsetWidth;
+      aura.classList.add('aura-hit');
+      setTimeout(() => aura.classList.remove('aura-hit'), 380);
+    }
+    Sound.play('armor');
+  }
+
+  function shieldShatter(sideId) {
+    const aura = $('#' + sideId + '-shield-aura');
+    if (aura) {
+      aura.classList.remove('hidden');
+      aura.classList.add('aura-shatter');
+      setTimeout(() => { aura.classList.add('hidden'); aura.classList.remove('aura-shatter'); }, 520);
+    }
+    const fighter = $('#fighter-' + sideId);
+    if (fighter) {
+      const rect = fighter.getBoundingClientRect();
+      for (let i = 0; i < 8; i += 1) {
+        const shard = document.createElement('i');
+        shard.className = 'shield-shard';
+        shard.style.left = (rect.left + rect.width / 2) + 'px';
+        shard.style.top = (rect.top + rect.height * 0.35) + 'px';
+        shard.style.setProperty('--sx', ((Math.random() - 0.5) * 120) + 'px');
+        shard.style.setProperty('--sy', ((Math.random() - 0.5) * 100) + 'px');
+        document.body.appendChild(shard);
+        setTimeout(() => shard.remove(), 700);
+      }
+    }
+    Sound.play('hit');
+  }
+
+  UI.resetVisualState = function () {
+    UI.lastHp = { player: null, ai: null };
+    UI.lastDrawSeq = 0;
+    UI.lastPlaySeq = 0;
+    UI.lastArmor = { player: null, ai: null };
+    UI.lastShieldHitSeq = 0;
+    UI.inspectUid = null;
+    UI.hideInspector();
+    const pr = $('#play-reveal'); if (pr) { pr.classList.add('hidden'); pr.classList.remove('out'); }
+    const da = $('#draw-anim'); if (da) da.innerHTML = '';
+  };
+
 
   function renderHand(state, opts) {
     const p = state.player;
@@ -476,14 +646,14 @@
       hand.innerHTML = '<div class="hand-empty">手牌空空如也</div>';
     } else {
       hand.innerHTML = p.hand.map((card) => {
-        const selected = p.selection.indexOf(card.uid) >= 0;
+        const inspected = opts.inspectUid === card.uid;
         const info = global.DD_ENGINE.playableInfo(state, p, card);
         const locked = state.phase !== 'play' || state.active !== p.id;
-        const disabled = !selected && !locked && !info.ok;
+        const disabled = !locked && !info.ok;
         const meta = typeMeta[card.type];
         const reason = info.ok ? '' : info.reason;
         const valueLabel = card.type === 'rest' && card.id === 'ningshen' ? '2' : (card.type === 'armor' || card.type === 'rest' ? '+' + card.value : card.value);
-        return `<button type="button" class="card ${selected ? 'selected' : ''} ${disabled ? 'disabled' : ''}" data-uid="${esc(card.uid)}" aria-pressed="${selected}" ${locked ? 'data-locked="1"' : ''}>
+        return `<button type="button" class="card ${inspected ? 'inspected' : ''} ${disabled ? 'disabled' : ''}" data-uid="${esc(card.uid)}" aria-pressed="${inspected}" ${locked ? 'data-locked="1"' : ''}>
           <span class="card-inner"><img src="${card.img}" alt="${esc(card.name)}" loading="lazy" /></span>
           <span class="card-badge ${card.type}">${esc(meta.label)}</span>
           <span class="card-value ${card.type}">${valueLabel}</span>
@@ -492,9 +662,11 @@
       }).join('');
     }
     if (scroll) scroll.scrollLeft = prevScroll;
-    const selected = global.DD_ENGINE.getSelectedCards(p);
     const slot = $('#selected-slot');
-    if (slot) slot.innerHTML = selected.map((c) => `<span class="sel-chip ${c.type === 'rest' ? 'rest' : ''}">${esc(c.name)}</span>`).join('');
+    const played = p.temp.playedCards || [];
+    if (slot) slot.innerHTML = played.length
+      ? played.map((c) => `<span class="sel-chip ${c.type === 'rest' ? 'rest' : ''}">${esc(c.name)}</span>`).join('')
+      : '<span class="sel-empty">单击查看详情 · 双击打出</span>';
   }
 
 
@@ -503,39 +675,27 @@
     if (!tips) return;
     const p = state.player;
     const foe = state.ai;
-    const selected = global.DD_ENGINE.getSelectedCards(p);
-    if (selected.length) {
-      const card = selected[selected.length - 1];
-      const mode = p.choices[card.uid];
-      let modeText = '';
-      if (mode === 'curse') modeText = ' · 结算方式：毒奶（对对手造成真伤并封锁回血）';
-      if (mode === 'steal') modeText = ' · 结算方式：掠影（摸对手 2 张手牌）';
-      tips.innerHTML = `
-        <div class="ht-head"><span>已选 ${selected.length} / ${global.DD_ENGINE.getPlayLimit(state, 'player')}</span><b>${esc(card.name)}</b><em>${esc(typeMeta[card.type].label)}${modeText}</em></div>
-        <p>${esc(card.desc)}</p>`;
+    const played = (p.temp.playedCards || []).length;
+    let line = '';
+    if (state.active !== p.id) {
+      line = '对手回合：等待对手摸牌、出牌和结算。';
+    } else if (p.status.frozenTurn === p.turnsTaken) {
+      line = '你被【冰刻箭雨之时】冻结，本回合无法打出任何手牌，只能使用职业能力或结束回合。';
+    } else if (state.phase === 'prepare') {
+      line = '准备阶段：可先使用职业能力，然后进入摸牌阶段。';
+    } else if (state.phase === 'play') {
+      if (p.temp.normalDisabled) line = '你回合开始时对方持有护盾，本回合普通攻击卡不可打出。可单击查看详情，双击打出其他牌。';
+      else if (foe.hp > 0) line = '单击卡牌高亮并查看详情；双击卡牌打出并立即结算。';
+      else line = '对局已结束。';
+    } else if (state.phase === 'gameover') {
+      line = '对局结束。';
     } else {
-      let line = '';
-      if (state.active !== p.id) {
-        line = '对手回合：等待对手摸牌、出牌和结算。';
-      } else if (p.status.frozenTurn === p.turnsTaken) {
-        line = '你被【冰刻箭雨之时】冻结，本回合无法打出任何手牌，只能使用职业能力或不出牌结束回合。';
-      } else if (state.phase === 'prepare') {
-        line = '准备阶段：可先使用职业能力。「进入摸牌阶段」后摸 2 张，再出牌。';
-      } else if (state.phase === 'play') {
-        const armor = global.DD_ENGINE.totalArmor(foe);
-        line = armor > 0
-          ? `对手有 ${armor} 点护盾：普通伤害可以打出但会被完全抵消；建议使用破甲卡。`
-          : '对手无护盾：可用普通伤害卡；破甲卡不可打出。';
-      } else if (state.phase === 'gameover') {
-        line = '对局结束。';
-      } else {
-        line = '选择一个行动继续。';
-      }
-      tips.innerHTML = `
-        <div class="ht-head"><span>出牌提示</span><b>${esc(p.name)}</b><em>${state.phase === 'play' ? '最多 ' + global.DD_ENGINE.getPlayLimit(state, 'player') + ' 张' : '准备阶段'}</em></div>
-        <p>${esc(line)}</p>
-        <div class="ht-legend"><i class="legend break">破甲</i><i class="legend armor">叠甲</i><i class="legend normal">普伤</i><i class="legend rest">休整</i><span>普通护甲下回合开始消散 · 双甲未碎保留小值额外护盾</span></div>`;
+      line = '选择一个行动继续。';
     }
+    tips.innerHTML = `
+      <div class="ht-head"><span>已出 ${played} / ${state.phase === 'play' ? global.DD_ENGINE.getPlayLimit(state, 'player') : '—'}</span><b>${esc(p.name)}</b><em>${state.phase === 'play' ? '双击出牌' : '准备阶段'}</em></div>
+      <p>${esc(line)}</p>
+      <div class="ht-legend"><i class="legend break">破甲</i><i class="legend armor">叠甲</i><i class="legend normal">普伤</i><i class="legend rest">休整</i><span>普通护甲下回合开始消散 · 双甲未碎保留小值额外护盾</span></div>`;
   }
 
   function renderAbilities(state) {
@@ -548,7 +708,7 @@
     if (info.cute) add('cute', '💗 可爱即是正义');
     if (info.meditation) add('meditation', '🍢 烧烤摸 3');
     if (info.withered) add('withered', '🔄 竭泽换牌');
-    if (info.destiny) add('destiny', '🔮 命定');
+    if (info.viewOpponent) add('viewOpponent', '👁 查看对方手牌');
     if (info.magicianSkip) add('magicianSkip', `${p.temp.skipDraw ? '✓ ' : ''}⏭ 跳过摸牌`, p.temp.skipDraw);
     if (info.scavenge) add('scavenge', '♻ 开拓拾牌');
     if (info.wolfJudge) add('wolfJudge', `${p.temp.werewolfJudge ? '✓ ' : ''}🌕 月嚎判定`, p.temp.werewolfJudge);
@@ -559,13 +719,15 @@
       return;
     }
     const ult = global.DD_ENGINE.canUseUltimate(state, 'player');
-    if (state.phase === 'play' || (ult.ok && p.long.ultimateUsed)) {
+    if (state.ultimatesEnabled !== false && !p.long.ultimateUsed && state.phase === 'play') {
       buttons.push(`<button type="button" class="ability-btn ultimate" data-ability="ultimate" ${ult.ok ? '' : 'disabled'}>✦ 必杀 · ${esc(p.char.ultimateName)} <small>${esc(p.char.ultimateCost)}</small></button>`);
     }
-    if (state.phase === 'prepare') {
+    if (state.ultimatesEnabled === false) {
+      buttons.push(`<span class="ability-hint">🔒 本局必杀技已关闭</span>`);
+    } else if (state.phase === 'prepare') {
       buttons.push(`<span class="ability-hint">准备阶段：使用能力或直接摸牌</span>`);
     } else if (state.phase === 'play' && !buttons.length) {
-      buttons.push(`<span class="ability-hint">点击手牌选择，最多 ${global.DD_ENGINE.getPlayLimit(state, 'player')} 张</span>`);
+      buttons.push(`<span class="ability-hint">单击查看 · 双击打出，最多 ${global.DD_ENGINE.getPlayLimit(state, 'player')} 张</span>`);
     }
     if (bar) bar.innerHTML = buttons.join('');
   }
@@ -580,8 +742,6 @@
       const newLogs = state.log.slice(opts.oldLogCount || 0);
       newLogs.forEach((l) => {
         if (l.kind === 'ultimate') { Sound.play('ult'); }
-        else if (l.kind === 'damage' && l.text.indexOf('失去') >= 0) { Sound.play('hit'); flashFighter(l.sideId, 'damage'); }
-        else if (l.kind === 'heal') { Sound.play('heal'); flashFighter(l.sideId, 'heal'); }
         else if (l.kind === 'armor') { Sound.play('armor'); }
         else if (l.kind === 'draw' && l.sideId === 'player') { Sound.play('draw'); }
       });
@@ -605,16 +765,17 @@
     const sub = $('#commit-sub');
     const myTurn = state.active === 'player';
     const canPlay = myTurn && state.phase === 'play';
+    const played = (p.temp.playedCards || []).length;
+    const limit = global.DD_ENGINE.getPlayLimit(state, 'player');
     if (btn) btn.disabled = !canPlay;
     if (label) {
       if (!myTurn) label.textContent = '对手回合';
       else if (!canPlay) label.textContent = state.phase === 'prepare' ? '等待摸牌' : '等待结算';
-      else if (!p.selection.length) label.textContent = '不出牌 · 结算';
-      else label.textContent = `结算 ${p.selection.length} 张牌`;
+      else label.textContent = '结束回合';
     }
-    if (sub) sub.textContent = canPlay ? '结束出牌并结算' : (myTurn ? '当前不可操作' : '等待对手行动');
+    if (sub) sub.textContent = canPlay ? `已出 ${played} / ${limit} 张 · 点击结束本回合` : (myTurn ? '当前不可操作' : '等待对手行动');
     const clear = $('#btn-clear-select');
-    if (clear) clear.disabled = !p.selection.length || !canPlay;
+    if (clear) clear.disabled = !UI.inspectUid;
   }
 
   /* ================= 选牌 / 确认 ================= */
@@ -628,8 +789,9 @@
     UI.showModal({
       title: opts.title || '选择一张牌',
       subtitle: opts.subtitle || '',
+      dismissable: false,
       body,
-      footer: [{ label: '取消', onClick: () => UI.closeModal() }],
+      footer: [{ label: '取消', onClick: () => { UI.closeModal(); if (opts.onCancel) opts.onCancel(); } }],
       onMount(root) {
         $$('[data-pick]', root).forEach((btn) => btn.addEventListener('click', () => {
           const card = cards[Number(btn.dataset.pick)];
@@ -665,6 +827,7 @@
       title: opts.title || '确认',
       subtitle: opts.subtitle || '',
       narrow: true,
+      dismissable: opts.dismissable !== false,
       body: `<div class="setup-lead">${opts.html || esc(opts.text || '')}</div>`,
       footer: [
         { label: opts.cancelLabel || '取消', onClick: () => { UI.closeModal(); if (opts.onCancel) opts.onCancel(); } },
@@ -680,6 +843,134 @@
       subtitle: '对手的全部手牌',
       body: `<div class="pick-grid">${cards.map((c) => `<div class="pick-card"><img src="${c.img}" alt="${esc(c.name)}" /><span>${esc(c.name)}</span></div>`).join('')}</div>`,
       footer: [{ label: '记下了', variant: 'primary', onClick: () => UI.closeModal() }],
+    });
+  };
+
+  /* ================= 卡牌详情 / 打出展示 ================= */
+  UI.showCardInspector = function (state, uid) {
+    const p = state.player;
+    const card = p.hand.find((c) => c.uid === uid);
+    const box = $('#card-inspector');
+    if (!card || !box) return;
+    UI.inspectUid = uid;
+    const info = global.DD_ENGINE.playableInfo(state, p, card);
+    const modes = global.DD_ENGINE.cardModeOptions(state, p, card);
+    const meta = typeMeta[card.type];
+    box.innerHTML = `
+      <div class="ci-art"><img src="${card.img}" alt="${esc(card.name)}" /></div>
+      <div class="ci-body">
+        <div class="ci-top"><span class="ci-name">${esc(card.name)}</span><span class="ci-type">${esc(meta.label)}</span><span class="ci-value">${card.value}</span></div>
+        <div class="ci-desc">${esc(card.desc)}</div>
+        ${info.ok ? '' : `<div class="ci-reason">✕ ${esc(info.reason)}</div>`}
+        ${modes.length ? `<div class="ci-hint">双击后选择：${esc(modes.map((m) => m.label).join(' / '))}</div>` : ''}
+        <div class="ci-hint">${info.ok ? '双击卡牌立即打出' : '当前无法打出，可继续查看'}</div>
+      </div>`;
+    box.classList.remove('hidden');
+  };
+
+  UI.hideInspector = function () {
+    UI.inspectUid = null;
+    const box = $('#card-inspector');
+    if (box) box.classList.add('hidden');
+  };
+
+  function showPlayReveal(play, state) {
+    const box = $('#play-reveal');
+    if (!box || !play || !play.card) return;
+    box.innerHTML = `<div class="pr-art-only"><img src="${play.card.img}" alt="" /></div>`;
+    box.classList.remove('hidden', 'out');
+    if (UI.playRevealTimer) clearTimeout(UI.playRevealTimer);
+    UI.playRevealTimer = setTimeout(() => {
+      box.classList.add('out');
+      setTimeout(() => { box.classList.add('hidden'); box.classList.remove('out'); }, 250);
+    }, 1700);
+    Sound.play('play');
+  }
+
+  /* ================= 准备阶段 / 多选 / 教程 ================= */
+  UI.showPrepPrompt = function (actions, onChoose, onSkip) {
+    const body = `<div class="prep-actions">${actions.map((a) => `<button type="button" class="prep-action" data-prep="${esc(a.id)}"><b>${esc(a.label)}</b><small>${esc(a.desc || '')}</small></button>`).join('')}</div>
+      <div class="rule-note">发动能力后会自动进入摸牌阶段；也可以跳过。</div>`;
+    UI.showModal({
+      title: '准备阶段',
+      subtitle: '是否发动职业能力？',
+      narrow: true,
+      dismissable: false,
+      body,
+      footer: [
+        { label: '跳过，直接摸牌', onClick: () => { UI.closeModal(); onSkip && onSkip(); } },
+      ],
+      onMount(root) {
+        $$('[data-prep]', root).forEach((btn) => btn.addEventListener('click', () => {
+          UI.closeModal();
+          if (onChoose) onChoose(btn.dataset.prep);
+        }));
+      },
+    });
+  };
+
+  UI.showMultiCardPicker = function (opts) {
+    const cards = opts.cards || [];
+    const min = opts.min || 0;
+    const max = Math.min(opts.max == null ? cards.length : opts.max, cards.length);
+    const selected = [];
+    const body = cards.length ? `<div class="pick-grid multi">${cards.map((c, i) => `
+      <button type="button" class="pick-card" data-pick="${i}">
+        <img src="${c.img}" alt="${esc(c.name)}" loading="lazy" />
+        <span>${esc(c.name)}</span>
+        <i class="pick-check">✓</i>
+      </button>`).join('')}</div>` : `<div class="rule-note">${esc(opts.empty || '没有可选的牌。')}</div>`;
+    const root = UI.showModal({
+      title: opts.title || '选择卡牌',
+      subtitle: (opts.subtitle || '') + `（${min === max ? '需选择 ' + min + ' 张' : '最多 ' + max + ' 张'}）`,
+      body,
+      dismissable: false,
+      footer: [
+        { label: '取消', onClick: () => UI.closeModal() },
+        { label: opts.confirmLabel || '确认', variant: 'primary', onClick: () => {
+          if (selected.length < min || selected.length > max) return;
+          UI.closeModal();
+          if (opts.onConfirm) opts.onConfirm(selected.slice());
+        } },
+      ],
+      onMount(modalRoot) {
+        const confirmBtn = $('[data-mbtn="1"]', modalRoot);
+        const sync = () => {
+          $$('[data-pick]', modalRoot).forEach((btn) => {
+            const card = cards[Number(btn.dataset.pick)];
+            btn.classList.toggle('selected', selected.indexOf(card.uid) >= 0);
+          });
+          if (confirmBtn) confirmBtn.disabled = selected.length < min || selected.length > max;
+        };
+        $$('[data-pick]', modalRoot).forEach((btn) => btn.addEventListener('click', () => {
+          const card = cards[Number(btn.dataset.pick)];
+          const at = selected.indexOf(card.uid);
+          if (at >= 0) selected.splice(at, 1);
+          else if (selected.length < max) selected.push(card.uid);
+          Sound.play('select');
+          sync();
+        }));
+        sync();
+      },
+    });
+    return root;
+  };
+
+  UI.showTutorial = function () {
+    UI.showModal({
+      title: '新手教程',
+      subtitle: '30 秒快速上手',
+      wide: true,
+      body: `
+        <div class="tutorial">
+          <div class="tut-step"><b>1. 选职业</b><p>首页选 1 个职业；每个职业有常驻被动和每局 1 次的必杀。</p></div>
+          <div class="tut-step"><b>2. 回合流程</b><p>轮到你时自动摸牌。准备阶段若有关键能力，会弹窗询问是否发动。</p></div>
+          <div class="tut-step"><b>3. 单击 / 双击</b><p>单击手牌查看详情并高亮；再次点击或双击立即打出，单张牌会实时结算。</p></div>
+          <div class="tut-step"><b>4. 护盾</b><p>护甲抵挡破甲伤害；自己下回合开始时普通护甲消散。双叠甲未碎会留下额外护盾。</p></div>
+          <div class="tut-step"><b>5. 必杀开关</b><p>在首页连续点击预言家 5 下，可以切换本局是否启用必杀。</p></div>
+          <div class="tut-step"><b>6. 联机</b><p>局域网联机需要电脑运行「手机访问-局域网服务器.bat」，两台设备打开同一网址。</p></div>
+        </div>`,
+      footer: [{ label: '开始游戏', variant: 'primary', onClick: () => UI.closeModal() }],
     });
   };
 
@@ -700,7 +991,6 @@
       else if (state.winner === 'ai') { title = '败 北'; sub = '此局已尽 · 再来一刀'; titleClass = 'lose'; Sound.play('lose'); }
       else { title = '平 局'; sub = '同归于尽 · 刀盾俱碎'; titleClass = 'draw'; }
     }
-    const logs = result.logs && result.logs.length ? result.logs : state.log.slice(-20);
     const played = result.playedCards || [];
     const body = `
       <div class="result-head">
@@ -723,11 +1013,12 @@
       ${state.seerDraw && state.seerDraw.viewer === p.id ? `<div class="result-seer">🔮 前瞻：对手本回合摸到 <b>${esc(state.seerDraw.cards.map((c) => c.name).join('、'))}</b></div>` : ''}
       <div class="result-stats">
         <div class="result-stat"><span>${turnSide === 'player' ? '你' : '对手'}本回合打出</span><b>${esc(played.join(' · ') || '无')}</b></div>
+        ${(result.playedCardDetails || []).length ? `<div class="result-cards">${result.playedCardDetails.map((c) => `<div class="result-card"><img src="${c.img}" alt="${esc(c.name)}" /><span>${esc(c.name)}</span></div>`).join('')}</div>` : ''}
         <div class="result-stat"><span>你的牌库 / 弃牌</span><b>${p.deck.length} / ${p.discard.length}</b></div>
         <div class="result-stat"><span>对手牌库 / 弃牌</span><b>${a.deck.length} / ${a.discard.length}</b></div>
         <div class="result-stat"><span>当前回合</span><b>第 ${state.round} 回合 · ${turnSide === 'player' ? '你的回合' : '对手回合'}</b></div>
       </div>
-      <div class="result-log">${logs.map((l) => logLine(l, true)).join('') || '<div class="feed-line system">本回合没有产生额外记录。</div>'}</div>`;
+      `;
     let footer;
     if (isEnd) {
       if (opts.lanGame) {
@@ -767,8 +1058,6 @@
     const logs = state.log.slice(oldCount);
     logs.forEach((l) => {
       if (l.kind === 'ultimate') Sound.play('ult');
-      else if (l.kind === 'damage' && l.text.indexOf('失去') >= 0) { Sound.play('hit'); flashFighter(l.sideId, 'damage'); }
-      else if (l.kind === 'heal') { Sound.play('heal'); flashFighter(l.sideId, 'heal'); }
       else if (l.kind === 'armor') Sound.play('armor');
     });
   };

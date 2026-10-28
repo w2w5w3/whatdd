@@ -164,11 +164,6 @@
     if (side.classId === 'kupai' && !side.long.witheredUsed && side.hp <= 4 && side.hand.length <= 4) {
       E.usePrepAbility(state, 'ai', 'withered');
     }
-    // 预言家：命定
-    if (side.classId === 'yuyanjia' && !side.long.destinyUsed && state.phase === 'prepare') {
-      const pool = ['tiaoxi', 'huanyu', 'ningshen', 'qingdun', 'qingji'];
-      E.usePrepAbility(state, 'ai', 'destiny', { cardId: pool[Math.floor(rand(state) * pool.length)] });
-    }
     // 魔术手：手牌足够时跳过摸牌，换取 3 张出牌
     if (side.classId === 'moshushou' && state.phase === 'prepare' && !side.temp.skipDraw) {
       const playable = playableCards(state, side);
@@ -194,6 +189,34 @@
     }
   }
 
+  function beforeCards(state) {
+    const side = state.ai;
+    if (!side || state.phase !== 'play') return;
+    if (E.canUseUltimate(state, side.id).ok) {
+      tryUltimate(state, side);
+      if (state.phase === 'gameover') return;
+    }
+    // 燃血行者：如果护盾能完全挡住攻击卡数值，用【新生】换一次回合末回复
+    if (side.classId === 'ranxue' && !side.temp.selfHarm) {
+      const shield = E.totalArmor(side);
+      const atk = side.hand
+        .filter((c) => c.type === 'break' || c.type === 'normal')
+        .sort((a, b) => b.value - a.value)
+        .find((c) => c.value <= shield);
+      if (atk) E.usePrepAbility(state, 'ai', 'selfHarm', { uid: atk.uid });
+    }
+  }
+
+  function chooseOne(state) {
+    const side = state.ai;
+    if (!side || state.phase !== 'play') return null;
+    const picks = chooseCards(state, side);
+    if (!picks.length) return null;
+    const card = picks[0];
+    const choices = pickModes(state, side, [card]);
+    return { uid: card.uid, choice: choices[card.uid] || null };
+  }
+
   function plan(state) {
     const side = state.ai;
     if (!side || state.phase !== 'play') return { uids: [], choices: {} };
@@ -217,7 +240,7 @@
     return { uids: picks.map((c) => c.uid), choices, ultimate: ult };
   }
 
-  const AI = { prepare, plan, chooseCards, tryUltimate, playableCards };
+  const AI = { prepare, beforeCards, chooseOne, plan, chooseCards, tryUltimate, playableCards };
   global.DD_AI = AI;
   if (typeof module !== 'undefined' && module.exports) module.exports = AI;
 })(typeof window !== 'undefined' ? window : globalThis);

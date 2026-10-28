@@ -30,6 +30,7 @@
         </div>
         <div class="home-top-actions">
           <button class="ghost-btn" id="btn-sound" type="button" title="音效开关">🔊 <span>音效</span></button>
+          <button class="ghost-btn" id="btn-tutorial" type="button">🎓 <span>新手教程</span></button>
           <button class="ghost-btn" id="btn-rules-home" type="button">📜 <span>完整规则</span></button>
         </div>
       </header>
@@ -82,7 +83,9 @@
         <span class="dot">·</span>
         <span>支持手机 / 平板 / 电脑</span>
         <span class="dot">·</span>
-        <span>v1.1.0</span>
+        <span>v1.3.0</span>
+        <span class="dot">·</span>
+        <span id="ultimate-state">必杀：启用</span>
       </footer>
     </section>
 
@@ -101,7 +104,6 @@
           <span class="phase-pill" id="hud-phase">准备阶段</span>
         </div>
         <div class="game-top-actions">
-          <button class="icon-btn" id="btn-log" type="button" title="战斗日志">📜</button>
           <button class="icon-btn" id="btn-rules-game" type="button" title="规则">❔</button>
           <button class="icon-btn" id="btn-sound-game" type="button" title="音效">🔊</button>
           <button class="icon-btn danger" id="btn-surrender" type="button" title="认输">🏳</button>
@@ -111,6 +113,7 @@
       <main class="arena">
         <!-- 对手 -->
         <section class="fighter fighter-ai" id="fighter-ai">
+          <div class="shield-aura hidden" id="ai-shield-aura"></div>
           <div class="fighter-art" id="ai-art"></div>
           <div class="fighter-info">
             <div class="fighter-heading">
@@ -131,7 +134,8 @@
             </div>
             <div class="status-chips" id="ai-status"></div>
             <div class="fighter-skill" id="ai-skill"></div>
-            <div class="foe-hand" id="ai-hand-back"></div>
+            <div class="hand-backs" id="ai-hand-backs" title="对手手牌"></div>
+            <div class="captain-counter hidden" id="ai-captain"></div>
           </div>
         </section>
 
@@ -162,13 +166,13 @@
             </div>
           </div>
 
-          <div class="intel-strip" id="intel-strip"><!-- 预言家揭示 / 命定 etc --></div>
-          <div class="battle-feed" id="battle-feed"><!-- latest log --></div>
-          <button class="feed-more" id="btn-feed-more" type="button">查看完整日志 ↗</button>
+          <div class="intel-strip" id="intel-strip"><!-- 预言家揭示 etc --></div>
+          <div class="turn-toast-line" id="turn-toast-line"></div>
         </section>
 
         <!-- 玩家 -->
         <section class="fighter fighter-player" id="fighter-player">
+          <div class="shield-aura hidden" id="player-shield-aura"></div>
           <div class="fighter-art" id="player-art"></div>
           <div class="fighter-info">
             <div class="fighter-heading">
@@ -189,6 +193,8 @@
             </div>
             <div class="status-chips" id="player-status"></div>
             <div class="fighter-skill" id="player-skill"></div>
+            <div class="hand-backs" id="player-hand-backs" title="你的手牌"></div>
+            <div class="captain-counter hidden" id="player-captain"></div>
           </div>
         </section>
       </main>
@@ -213,15 +219,19 @@
       <section class="command-dock">
         <div class="ability-bar" id="ability-bar"></div>
         <div class="command-main">
-          <button class="ghost-action" id="btn-clear-select" type="button">清空选择</button>
+          <button class="ghost-action" id="btn-clear-select" type="button">关闭详情</button>
           <button class="commit-btn" id="btn-commit" type="button">
-            <span id="commit-label">不出牌 · 结算</span>
-            <small id="commit-sub">结束出牌并结算</small>
+            <span id="commit-label">结束回合</span>
+            <small id="commit-sub">结束本回合，进入结算</small>
           </button>
         </div>
       </section>
     </section>
   </div>
+
+  <div id="card-inspector" class="card-inspector hidden" aria-live="polite"></div>
+  <div id="play-reveal" class="play-reveal hidden" aria-live="polite"></div>
+  <div id="draw-anim" class="draw-anim" aria-hidden="true"></div>
 
   <div id="modal-root" class="modal-root" aria-live="polite"></div>
   <div id="toast-root" class="toast-root"></div>

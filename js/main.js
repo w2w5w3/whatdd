@@ -28,9 +28,21 @@
     guestResultOpen: false,
     guestRevealKey: null,
     guestBusy: false,
+    guestPrepKey: null,
     hostSendQueue: Promise.resolve(),
     guestSendQueue: Promise.resolve(),
+    // 实时出牌 / 隐藏必杀开关
+    inspectUid: null,
+    lastCardClick: { uid: null, at: 0 },
+    ultClickCount: 0,
+    ultClickAt: 0,
+    ultimatesEnabled: true,
   };
+  try {
+    const savedUlt = localStorage.getItem('dd_ultimates');
+    if (savedUlt === '0') app.ultimatesEnabled = false;
+  } catch (e) { /* private mode */ }
+  UI.ultimatesEnabled = app.ultimatesEnabled;
   app.selectedClass = C.CLASS_LIST[app.selectedClass].id;
 
   /* ---------------- 页面切换 ---------------- */
@@ -44,9 +56,11 @@
   function showHome() {
     stopLan();
     UI.closeModal();
+    UI.hideInspector();
     app.mode = 'solo';
     app.game = null;
     showScreen('home');
+    applyUltimateSetting(true);
     UI.renderHome(app.selectedClass);
     UI.setSoundUI();
   }
@@ -57,9 +71,12 @@
     UI.ensureAudio();
     UI.clearToasts();
     app.mode = 'solo';
-    const state = E.createGame({ playerClass: app.selectedClass, controllers: { ai: AI } });
+    const state = E.createGame({ playerClass: app.selectedClass, controllers: { ai: AI }, ultimatesEnabled: app.ultimatesEnabled });
     app.game = state;
     app.logCount = state.log.length;
+    app.inspectUid = null;
+    app.lastCardClick = { uid: null, at: 0 };
+    UI.resetVisualState();
     UI.closeModal();
     showScreen('game');
     renderGame(false);
@@ -83,15 +100,23 @@
     if (!r.ok) { UI.toast(r.error, 'error'); return; }
     UI.closeModal();
     app.logCount = state.log.length;
+    app.inspectUid = null;
+    app.lastCardClick = { uid: null, at: 0 };
+    UI.resetVisualState();
     renderGame(false);
     UI.clearToasts();
     const ch = state.player.long.poisonType;
-    if (ch) UI.toast('你的毒咒：对手摸到「' + C.CARDS[ch].name + '」时受到 1 点真实伤害', 'success');
+    if (ch) {
+      const cat = (C.POISON_CATEGORIES || []).find((x) => x.id === ch);
+      UI.toast('你的毒咒：对手摸到「' + (cat ? cat.name : ch) + '」时受到 1 点真实伤害', 'success');
+    }
+    startPlayerTurn();
   }
 
   function restartGame() {
     stopLan();
     UI.closeModal();
+    UI.hideInspector();
     app.mode = 'solo';
     launchGame();
   }
@@ -101,8 +126,7 @@
     const state = app.game;
     if (!state) return;
     const old = app.logCount;
-    UI.renderGame(state, { preserveScroll: true, animateLogs: false });
-    if (animate && app.mode !== 'lan-guest') UI.handleNewLogs(state, old);
+    UI.renderGame(state, { preserveScroll: true, animateLogs: false, inspectUid: app.inspectUid });
     app.logCount = state.log.length;
     if (app.mode === 'lan-host') sendHostSnapshot();
   }
@@ -111,148 +135,241 @@
     if (!app.game) return;
     renderGame(animate !== false);
     if (app.game.phase === 'gameover') {
-      setTimeout(() => showEnd(), 260);
+      setTimeout(() => showEnd(), 760);
     }
   }
 
-  function resultHandlers() {
-    return {
-      onNext: () => {
-        const state = app.game;
-        if (!state || state.phase !== 'result') return;
-        if (app.mode === 'lan-guest') return;
-        const wasSide = state.active;
-        const r = E.nextTurn(state);
-        if (!r.ok) { UI.toast(r.error, 'error'); return; }
-        UI.clearToasts();
-        renderGame(false);
-        if (wasSide === 'player' && state.active === 'ai' && app.mode === 'solo') {
-          startAITurn();
-        } else if (wasSide === 'ai' && state.active === 'player') {
-          UI.toast('第 ' + state.round + ' 回合 · 你的回合', 'success');
-        }
-        $('#battle-feed') && ($('#battle-feed').scrollTop = $('#battle-feed').scrollHeight);
-      },
-      onRestart: restartGame,
-      onHome: showHome,
-    };
+  function overHandlers() {
+    return { onRestart: restartGame, onHome: showHome };
   }
-
   function resultOpts() {
-    return {
-      guestWaiting: app.mode === 'lan-guest',
-      lanGame: app.mode === 'lan-host' || app.mode === 'lan-guest',
-    };
+    return { lanGame: app.mode === 'lan-host' || app.mode === 'lan-guest' };
   }
-
-  function showResultNow() {
-    const state = app.game;
-    if (!state) return;
-    UI.showResult(state, resultHandlers(), resultOpts());
-  }
-
   function showEnd() {
     const state = app.game;
     if (!state || state.phase !== 'gameover') return;
-    UI.showResult(state, resultHandlers(), resultOpts());
+    app.inspectUid = null;
+    UI.hideInspector();
+    UI.showResult(state, overHandlers(), resultOpts());
+  }
+
+  function resetTurnUi() {
+    app.inspectUid = null;
+    app.lastCardClick = { uid: null, at: 0 };
+    UI.hideInspector();
+  }
+
+  function prepActions(state) {
+    const info = E.getAbilityInfo(state, 'player');
+    const defs = {
+      cute: { label: '💗 可爱即是正义', desc: '将 1 张伤害牌转化为护甲牌' },
+      meditation: { label: '🍢 烧烤摸 3', desc: '额外摸 3 张牌' },
+      withered: { label: '🔄 竭泽换牌', desc: '当前手牌与牌库互换' },
+      magicianSkip: { label: '⏭ 跳过摸牌', desc: '跳过摸牌，本回合可出 3 张（不能出凝神）' },
+      scavenge: { label: '♻ 开拓拾牌', desc: '跳过摸牌，从弃牌堆拾回 1 张' },
+      wolfJudge: { label: '🌕 月嚎判定', desc: '失去 5 点生命，判定两张同牌' },
+      sameSorrow: { label: '💞 同殇', desc: state.player.long.sameSorrow ? '关闭反伤' : '开启反伤' },
+    };
+    return Object.keys(info).filter((k) => info[k] && defs[k]).map((id) => ({ id, ...defs[id] }));
+  }
+
+  function startPlayerTurn() {
+    const state = app.game;
+    if (!state || app.mode === 'lan-guest') return;
+    if (state.active !== 'player' || state.phase !== 'prepare') return;
+    resetTurnUi();
+    const acts = prepActions(state);
+    if (acts.length) {
+      UI.showPrepPrompt(acts, (id) => useAbility(id, () => autoDrawPlayer()), () => autoDrawPlayer());
+    } else {
+      setTimeout(autoDrawPlayer, 260);
+    }
+  }
+
+  function autoDrawPlayer() {
+    const state = app.game;
+    if (!state || state.active !== 'player' || state.phase !== 'prepare') return;
+    if (app.mode === 'lan-guest') { guestSendAction('draw'); return; }
+    const r = E.startDraw(state);
+    if (!r.ok) { UI.toast(r.error, 'error'); return; }
+    renderGame(true);
+    if (state.phase === 'gameover') { setTimeout(showEnd, 700); return; }
+    const line = $('#turn-toast-line');
+    if (line) line.textContent = '第 ' + state.round + ' 回合 · 你的回合 · 单击查看 / 双击出牌';
+  }
+
+  function startGuestTurn() {
+    const state = app.game;
+    if (!state || app.mode !== 'lan-guest' || state.active !== 'player' || state.phase !== 'prepare') return;
+    const key = state.round + ':' + state.turn + ':' + state.active;
+    if (app.guestPrepKey === key) return;
+    app.guestPrepKey = key;
+    const acts = prepActions(state);
+    if (acts.length) {
+      UI.showPrepPrompt(
+        acts,
+        (id) => guestUseAbility(id, () => guestSendAction('draw')),
+        () => guestSendAction('draw')
+      );
+    } else {
+      setTimeout(() => {
+        if (app.game && app.game === state && app.game.phase === 'prepare' && app.game.active === 'player') {
+          guestSendAction('draw');
+        }
+      }, 450);
+    }
+  }
+
+  function advanceAfterTurn() {
+    const state = app.game;
+    if (!state || state.phase !== 'result' || app.mode === 'lan-guest') return;
+    const wasSide = state.active;
+    resetTurnUi();
+    const r = E.nextTurn(state);
+    if (!r.ok) { UI.toast(r.error, 'error'); return; }
+    renderGame(false);
+    const line = $('#turn-toast-line');
+    if (line) line.textContent = wasSide === 'player' ? '对手回合' : '你的回合';
+    if (app.mode === 'solo') {
+      if (state.active === 'ai') startAITurn();
+      else startPlayerTurn();
+    } else if (app.mode === 'lan-host') {
+      if (state.active === 'player') startPlayerTurn();
+    }
   }
 
   function startAITurn() {
     const state = app.game;
     if (!state || app.mode !== 'solo' || state.active !== 'ai' || state.phase !== 'prepare') return;
     UI.clearToasts();
-    UI.toast('对手回合…');
     renderGame(false);
     setTimeout(() => {
       if (!app.game || app.mode !== 'solo') return;
-      E.runAITurn(app.game, AI);
+      const st = app.game;
+      AI.prepare(st);
+      if (st.phase === 'gameover') { renderGame(true); setTimeout(showEnd, 700); return; }
+      const r = E.startDraw(st);
       renderGame(true);
-      if (app.game.phase === 'result' || app.game.phase === 'gameover') showResultNow();
-    }, 650);
+      if (!r.ok || st.phase === 'gameover') { setTimeout(showEnd, 700); return; }
+      setTimeout(() => {
+        if (!app.game || app.mode !== 'solo' || st.phase !== 'play') return;
+        AI.beforeCards(st);
+        renderGame(true);
+        if (st.phase === 'gameover') { setTimeout(showEnd, 700); return; }
+        setTimeout(aiPlayNext, 620);
+      }, 580);
+    }, 520);
+  }
+
+  function aiPlayNext() {
+    const state = app.game;
+    if (!state || app.mode !== 'solo' || state.active !== 'ai') return;
+    if (state.phase === 'gameover') { setTimeout(showEnd, 700); return; }
+    if (state.phase !== 'play') { setTimeout(advanceAfterTurn, 300); return; }
+    const limit = E.getPlayLimit(state, 'ai');
+    if ((state.ai.temp.playedCards || []).length >= limit) { finishAITurn(); return; }
+    const pick = AI.chooseOne(state);
+    if (!pick) { finishAITurn(); return; }
+    const r = E.playCard(state, 'ai', pick.uid, { choice: pick.choice });
+    if (!r.ok) { finishAITurn(); return; }
+    renderGame(true);
+    if (state.phase === 'gameover') { setTimeout(showEnd, 800); return; }
+    if ((state.ai.temp.playedCards || []).length >= limit) { setTimeout(finishAITurn, 850); return; }
+    setTimeout(aiPlayNext, 900);
+  }
+
+  function finishAITurn() {
+    const state = app.game;
+    if (!state || app.mode !== 'solo') return;
+    if (state.phase === 'play') {
+      E.endTurn(state);
+      renderGame(true);
+    }
+    if (state.phase === 'gameover') { setTimeout(showEnd, 700); return; }
+    setTimeout(advanceAfterTurn, 360);
   }
 
   /* ---------------- 基础操作 ---------------- */
-  function enterDraw() {
-    const state = app.game;
-    if (!state || state.phase !== 'prepare' || state.active !== 'player') return;
-    if (app.mode === 'lan-guest') {
-      if (app.guestBusy) return;
-      app.guestBusy = true;
-      guestSendAction('draw');
-      UI.toast('已请求摸牌，等待房主同步…');
-      return;
-    }
-    const r = E.startDraw(state);
-    if (!r.ok) { UI.toast(r.error, 'error'); return; }
-    if (state.phase === 'gameover') { renderGame(true); showEnd(); return; }
-    renderGame(true);
-    UI.clearToasts();
-    UI.Sound.play('draw');
-    const handCount = state.player.hand.length;
-    setTimeout(() => {
-      UI.clearToasts();
-      UI.toast('摸牌完成，手牌 ' + handCount + ' 张。选择至多 ' + E.getPlayLimit(state, 'player') + ' 张牌。');
-    }, 120);
-  }
-
-  function commitTurn() {
+  /* ---------------- 基础操作 ---------------- */
+  function endPlayerTurn() {
     const state = app.game;
     if (!state || state.phase !== 'play' || state.active !== 'player') return;
     if (app.mode === 'lan-guest') {
       if (app.guestBusy) return;
       app.guestBusy = true;
-      guestSendAction('commit');
-      UI.clearToasts();
-      UI.toast('已结束出牌，等待房主结算…');
+      guestSendAction('endTurn');
       return;
     }
-    const r = E.commitTurn(state);
+    const r = E.endTurn(state);
     if (!r.ok) { UI.toast(r.error, 'error'); return; }
-    UI.clearToasts();
+    resetTurnUi();
     renderGame(true);
-    setTimeout(() => showResultNow(), 260);
+    if (state.phase === 'gameover') { setTimeout(showEnd, 800); return; }
+    setTimeout(advanceAfterTurn, 260);
   }
 
-  function clearSelection() {
-    const state = app.game;
-    if (!state) return;
-    state.player.selection.slice().forEach((uid) => E.deselectCard(state, 'player', uid));
-    renderGame(false);
-    if (app.mode === 'lan-guest') guestSendAction('clearSelection');
-    UI.Sound.play('deselect');
+  function closeInspector() {
+    app.inspectUid = null;
+    app.lastCardClick = { uid: null, at: 0 };
+    UI.hideInspector();
+    if (app.game) renderGame(false);
   }
 
-  function selectHandCard(uid) {
+  function inspectOrPlayCard(uid) {
     const state = app.game;
     if (!state) return;
-    if (state.active !== 'player') {
-      UI.toast('当前是对手回合，请等待对手行动', 'error');
-      return;
-    }
-    if (state.phase !== 'play') {
-      const msg = state.phase === 'prepare' ? '先进入摸牌阶段，再选择手牌' : '当前不是出牌阶段';
-      UI.toast(msg, 'error');
-      return;
-    }
     const card = state.player.hand.find((c) => c.uid === uid);
     if (!card) return;
-    if (state.player.selection.indexOf(uid) >= 0) {
-      E.deselectCard(state, 'player', uid);
+    const now = Date.now();
+    const isDouble = app.lastCardClick.uid === uid || app.inspectUid === uid;
+    app.lastCardClick = { uid, at: now };
+    if (!isDouble) {
+      app.inspectUid = uid;
+      UI.showCardInspector(state, uid);
       renderGame(false);
-      if (app.mode === 'lan-guest') guestSendAction('deselect', { uid });
-      UI.Sound.play('deselect');
+      UI.Sound.play('select');
       return;
     }
-    const r = E.selectCard(state, 'player', uid);
-    if (!r.ok) { UI.toast(r.error, 'error'); UI.Sound.play('click'); return; }
-    renderGame(false);
-    if (app.mode === 'lan-guest') guestSendAction('select', { uid });
-    UI.Sound.play('select');
-    if (r.options && r.options.length > 1) showModeModal(card, r.options);
+    // 双击：尝试打出
+    if (state.active !== 'player') { UI.toast('当前是对手回合，请等待对手行动', 'error'); return; }
+    if (state.phase !== 'play') {
+      UI.toast(state.phase === 'prepare' ? '先进入摸牌阶段，再打出卡牌' : '当前不是出牌阶段', 'error');
+      return;
+    }
+    const info = E.playableInfo(state, state.player, card);
+    if (!info.ok) { UI.toast(info.reason, 'error'); UI.Sound.play('click'); return; }
+    app.inspectUid = uid;
+    UI.showCardInspector(state, uid);
+    const modes = E.cardModeOptions(state, state.player, card);
+    if (modes.length > 1) {
+      showModeModal(card, modes, (mode) => playHandCard(uid, mode));
+      return;
+    }
+    playHandCard(uid, modes.length ? modes[0].id : null);
   }
 
-  function showModeModal(card, options) {
+  function playHandCard(uid, choice) {
     const state = app.game;
+    if (!state) return;
+    const card = state.player.hand.find((c) => c.uid === uid);
+    if (!card) return;
+    app.inspectUid = null;
+    UI.hideInspector();
+    if (app.mode === 'lan-guest') {
+      if (app.guestBusy) return;
+      app.guestBusy = true;
+      guestSendAction('playCard', { uid, choice });
+      UI.toast('已发送出牌请求，等待房主结算…');
+      renderGame(false);
+      return;
+    }
+    const r = E.playCard(state, 'player', uid, { choice });
+    if (!r.ok) { UI.toast(r.error, 'error'); app.guestBusy = false; return; }
+    renderGame(true);
+    if (state.phase === 'gameover') setTimeout(showEnd, 850);
+  }
+
+  function showModeModal(card, options, onChoose) {
     const body = options.map((o, i) => `
       <button type="button" class="setup-option" data-mode="${esc(o.id)}">
         <h4>${esc(o.label)}</h4>
@@ -260,18 +377,14 @@
       </button>`).join('');
     UI.showModal({
       title: '选择结算方式 · ' + card.name,
-      subtitle: card.desc,
+      subtitle: '选择后会立即打出并实时结算',
       narrow: true,
       body,
-      footer: [{ label: '保持默认', onClick: () => UI.closeModal() }],
+      footer: [{ label: '取消', onClick: () => UI.closeModal() }],
       onMount(root) {
         root.querySelectorAll('[data-mode]').forEach((btn) => btn.addEventListener('click', () => {
-          const r = E.setCardChoice(state, 'player', card.uid, btn.dataset.mode);
-          if (!r.ok) { UI.toast(r.error, 'error'); return; }
-          if (app.mode === 'lan-guest') guestSendAction('setChoice', { uid: card.uid, mode: btn.dataset.mode });
           UI.closeModal();
-          renderGame(false);
-          UI.toast('已选择：' + (options.find((o) => o.id === btn.dataset.mode) || {}).label, 'success');
+          onChoose(btn.dataset.mode);
         }));
       },
     });
@@ -282,13 +395,20 @@
   }
 
   /* ---------------- 能力 ---------------- */
-  function useAbility(id) {
+  function useAbility(id, onDone) {
     const state = app.game;
-    if (!state) return;
-    if (state.active !== 'player') { UI.toast('当前是对手回合', 'error'); return; }
-    if (state.phase === 'gameover') return;
-    if (app.mode === 'lan-guest') { guestUseAbility(id); return; }
-    if (id === 'ultimate') { askUltimate(); return; }
+    const done = () => { if (typeof onDone === 'function') onDone(); };
+    if (!state) { done(); return; }
+    if (state.active !== 'player') { UI.toast('当前是对手回合', 'error'); done(); return; }
+    if (state.phase === 'gameover') { done(); return; }
+    if (app.mode === 'lan-guest') { guestUseAbility(id, done); return; }
+    if (id === 'ultimate') { askUltimate(done); return; }
+    if (id === 'viewOpponent') {
+      if (!state.ai.hand.length) UI.toast('对方没有手牌');
+      else UI.showReveal(state.ai.hand);
+      done();
+      return;
+    }
     if (id === 'cute') {
       const cards = state.player.hand.filter((c) => c.type === 'break' || c.type === 'normal');
       UI.showCardPicker({
@@ -298,23 +418,12 @@
         empty: '手中没有伤害牌，无法转化。',
         onPick(card) {
           const r = E.usePrepAbility(state, 'player', 'cute', { uid: card.uid });
-          if (!r.ok) { UI.toast(r.error, 'error'); return; }
+          if (!r.ok) { UI.toast(r.error, 'error'); done(); return; }
           actionDone(false);
           UI.toast('已转化为 ' + card.value + ' 点护甲牌', 'success');
+          done();
         },
-      });
-      return;
-    }
-    if (id === 'destiny') {
-      UI.showTypePicker({
-        title: '命定 · 指定对手下一张牌',
-        subtitle: '若对手牌库中已无该牌，则对手跳过本次摸牌（每局一次）',
-        onPick(cardId) {
-          const r = E.usePrepAbility(state, 'player', 'destiny', { cardId });
-          if (!r.ok) { UI.toast(r.error, 'error'); return; }
-          actionDone(false);
-          UI.toast('已命定：' + C.CARDS[cardId].name, 'success');
-        },
+        onCancel: done,
       });
       return;
     }
@@ -326,24 +435,29 @@
         empty: '弃牌堆还是空的。',
         onPick(card) {
           const r = E.usePrepAbility(state, 'player', 'scavenge', { uid: card.uid });
-          if (!r.ok) { UI.toast(r.error, 'error'); return; }
+          if (!r.ok) { UI.toast(r.error, 'error'); done(); return; }
           actionDone(false);
-          UI.toast('已选择从弃牌堆拾取「' + card.name + '」，进入摸牌阶段时生效', 'success');
+          UI.toast('已选择从弃牌堆拾取「' + card.name + '」', 'success');
+          done();
         },
+        onCancel: done,
       });
       return;
     }
     if (id === 'withered') {
       UI.confirm({
         title: '竭泽',
+        dismissable: false,
         html: '将当前手牌与牌库互换。<br><b>手牌 ' + state.player.hand.length + ' 张 / 牌库 ' + state.player.deck.length + ' 张</b><br>每局仅一次。',
         okLabel: '交换',
         onOk() {
           const r = E.usePrepAbility(state, 'player', 'withered');
-          if (!r.ok) { UI.toast(r.error, 'error'); return; }
+          if (!r.ok) { UI.toast(r.error, 'error'); done(); return; }
           actionDone(false);
           UI.toast('手牌与牌库已互换', 'success');
+          done();
         },
+        onCancel: done,
       });
       return;
     }
@@ -356,51 +470,125 @@
         empty: '手中没有攻击卡，无法发动【新生】。',
         onPick(card) {
           const r = E.usePrepAbility(state, 'player', 'selfHarm', { uid: card.uid });
-          if (!r.ok) { UI.toast(r.error, 'error'); return; }
+          if (!r.ok) { UI.toast(r.error, 'error'); done(); return; }
           actionDone(false);
           UI.toast('【新生】已发动：回合结束回复 ' + card.value + ' 点生命', 'success');
+          done();
         },
+        onCancel: done,
       });
       return;
     }
     const map = { meditation: 'meditation', magicianSkip: 'magicianSkip', wolfJudge: 'wolfJudge', sameSorrow: 'sameSorrow' };
     if (map[id]) {
       const r = E.usePrepAbility(state, 'player', map[id]);
-      if (!r.ok) { UI.toast(r.error, 'error'); return; }
+      if (!r.ok) { UI.toast(r.error, 'error'); done(); return; }
       actionDone(false);
       if (id === 'meditation') UI.toast('触发【别吵，我在烧烤】：额外摸 3 张牌', 'success');
       if (id === 'magicianSkip') UI.toast(state.player.temp.skipDraw ? '本回合跳过摸牌，可出 3 张牌（不能出凝神）' : '已取消跳过摸牌', 'success');
       if (id === 'wolfJudge') UI.toast(state.player.temp.werewolfJudge ? '摸牌时将进行【月嚎】判定' : '已取消【月嚎】判定', 'success');
       if (id === 'sameSorrow') UI.toast(state.player.long.sameSorrow ? '【同殇】已开启' : '【同殇】已关闭', 'success');
+      done();
       return;
     }
+    done();
   }
 
-  function askUltimate() {
+  function applyUltimate(opts, onDone) {
     const state = app.game;
-    if (!state) return;
-    if (state.active !== 'player') { UI.toast('当前是对手回合', 'error'); return; }
-    if (app.mode === 'lan-guest') { askGuestUltimate(); return; }
+    const done = () => { if (typeof onDone === 'function') onDone(); };
+    const r = E.useUltimate(state, 'player', opts || {});
+    if (!r.ok) { UI.toast(r.error, 'error'); done(); return; }
+    if (state.phase === 'gameover') {
+      renderGame(true);
+      setTimeout(showEnd, 700);
+      done();
+      return;
+    }
+    renderGame(true);
+    UI.Sound.play('ult');
+    UI.toast('必杀发动：' + state.player.char.ultimateName, 'success');
+    done();
+  }
+
+  function askUltimate(onDone) {
+    const state = app.game;
+    if (!state) { if (onDone) onDone(); return; }
+    if (state.active !== 'player') { UI.toast('当前是对手回合', 'error'); if (onDone) onDone(); return; }
+    if (app.mode === 'lan-guest') { askGuestUltimate(onDone); return; }
     const cls = state.player.char;
     const can = E.canUseUltimate(state, 'player');
-    if (!can.ok) { UI.toast(can.reason, 'error'); return; }
+    if (!can.ok) { UI.toast(can.reason, 'error'); if (onDone) onDone(); return; }
+    const cost = E.getUltimateCost(state, 'player');
     UI.confirm({
       title: '必杀 · ' + cls.ultimateName,
       subtitle: '每局仅限一次',
-      html: `<b>效果</b><br>${esc(cls.ultimateText)}<br><br><b>代价</b><br>${esc(cls.ultimateCost)}<br><br><span style="color:#8f96a3">必杀造成的抽牌、伤害与状态会在发动时立即结算，请确认血量与手牌。</span>`,
+      html: `<b>效果</b><br>${esc(cls.ultimateText)}<br><br><b>代价</b><br>${esc(cls.ultimateCost)}`,
       okLabel: '发动必杀',
       danger: true,
       onOk() {
-        const r = E.useUltimate(state, 'player');
-        if (!r.ok) { UI.toast(r.error, 'error'); return; }
-        if (state.phase === 'gameover') {
-          renderGame(true);
-          showEnd();
+        if (state.player.classId === 'yuyanjia') {
+          if (state.ai.hand.length) {
+            UI.showMultiCardPicker({
+              title: '命定 · 选择对方手牌',
+              subtitle: '选择最多 2 张放回对方牌库底；取消则不选择',
+              cards: state.ai.hand.slice(),
+              min: 0,
+              max: 2,
+              confirmLabel: '放回牌库底',
+              onConfirm(uids) { applyUltimate({ opponentUids: uids }, onDone); },
+              onCancel() { applyUltimate({}, onDone); },
+            });
+          } else applyUltimate({}, onDone);
           return;
         }
-        renderGame(true);
-        UI.Sound.play('ult');
-        UI.toast('必杀发动：' + cls.ultimateName, 'success');
+        if (cost.discard > 0) {
+          UI.showMultiCardPicker({
+            title: '必杀代价 · 选择弃置的牌',
+            subtitle: '请选择 ' + cost.discard + ' 张手牌弃置',
+            cards: state.player.hand.slice(),
+            min: cost.discard,
+            max: cost.discard,
+            confirmLabel: '弃置并发动',
+            onConfirm(uids) { applyUltimate({ discardUids: uids }, onDone); },
+            onCancel() { if (onDone) onDone(); },
+          });
+          return;
+        }
+        applyUltimate({}, onDone);
+      },
+    });
+  }
+
+  function askGuestUltimate(onDone) {
+    const state = app.game;
+    if (!state) return;
+    const cls = state.player.char;
+    const can = E.canUseUltimate(state, 'player');
+    if (!can.ok) { UI.toast(can.reason, 'error'); if (onDone) onDone(); return; }
+    const cost = E.getUltimateCost(state, 'player');
+    UI.confirm({
+      title: '必杀 · ' + cls.ultimateName,
+      subtitle: '每局仅限一次 · 由房主端执行',
+      html: `<b>效果</b><br>${esc(cls.ultimateText)}<br><br><b>代价</b><br>${esc(cls.ultimateCost)}`,
+      okLabel: '发动必杀',
+      danger: true,
+      onOk() {
+        if (cost.discard > 0) {
+          UI.showMultiCardPicker({
+            title: '必杀代价 · 选择弃置的牌',
+            subtitle: '请选择 ' + cost.discard + ' 张手牌弃置',
+            cards: state.player.hand.slice(),
+            min: cost.discard,
+            max: cost.discard,
+            confirmLabel: '弃置并发动',
+            onConfirm(uids) { guestSendAction('ultimate', { discardUids: uids }); if (onDone) onDone(); },
+            onCancel() { if (onDone) onDone(); },
+          });
+          return;
+        }
+        guestSendAction('ultimate', {});
+        if (onDone) onDone();
       },
     });
   }
@@ -423,6 +611,7 @@
     app.guestResultOpen = false;
     app.guestRevealKey = null;
     app.guestBusy = false;
+    app.guestPrepKey = null;
     app.hostSendQueue = Promise.resolve();
     app.guestSendQueue = Promise.resolve();
     app.mode = app.screen === 'game' ? app.mode : 'solo';
@@ -501,12 +690,13 @@
   function chooseLanSetup(classId, cb) {
     if (classId !== 'nvwu' && classId !== 'langren') { cb(null); return; }
     if (classId === 'nvwu') {
+      const cats = C.POISON_CATEGORIES || [];
       UI.showModal({
         title: '战前准备 · 毒咒',
-        subtitle: '选择一种牌投毒（对手摸到时受到 1 点真实伤害）',
-        body: `<div class="setup-cards">${C.CARD_LIST.map((card) => `
-          <button type="button" class="setup-card" data-lan-poison="${card.id}">
-            <img src="${card.img}" alt="${esc(card.name)}" loading="lazy" /><b>${esc(card.name)}</b>
+        subtitle: '选择一种卡牌类别投毒（对手摸到该类牌时受到 1 点真实伤害）',
+        body: `<div class="setup-cards">${cats.map((cat) => `
+          <button type="button" class="setup-card" data-lan-poison="${cat.id}">
+            <b>${esc(cat.name)}</b>
           </button>`).join('')}</div>`,
         footer: [{ label: '取消', onClick: () => UI.closeModal() }],
         onMount(root) {
@@ -670,6 +860,7 @@
       else if (msg.type === 'action') handleGuestAction(msg.payload || {});
     } else if (app.lan.role === 'guest') {
       if (msg.type === 'state') applyGuestSnapshot(msg.payload);
+      else if (msg.type === 'viewHand') UI.showReveal((msg.payload && msg.payload.cards) || []);
       else if (msg.type === 'error') UI.toast((msg.payload && msg.payload.message) || '房主拒绝了操作', 'error');
     }
   }
@@ -680,11 +871,11 @@
     const guestClass = C.CLASSES[payload.classId] ? payload.classId : 'fanren';
     const guestSetup = payload.setup || null;
     const hostClass = app.lanClass || app.selectedClass;
-    const state = E.createGame({ playerClass: hostClass, aiClass: guestClass, controllers: {} });
+    const state = E.createGame({ playerClass: hostClass, aiClass: guestClass, controllers: {}, ultimatesEnabled: app.ultimatesEnabled });
     state.mode = 'lan-host';
     // 房主自己的开局选择
     if (hostClass === 'nvwu') {
-      const value = app.lanSetup && app.lanSetup.type === 'poison' ? app.lanSetup.value : C.CARD_LIST[0].id;
+      const value = app.lanSetup && app.lanSetup.type === 'poison' ? app.lanSetup.value : C.POISON_CATEGORIES[0].id;
       E.chooseSetup(state, 'poison', value);
     }
     if (hostClass === 'langren') {
@@ -693,7 +884,7 @@
     }
     // 加入者的开局选择由房主写入
     if (guestClass === 'nvwu') {
-      state.ai.long.poisonType = guestSetup && guestSetup.type === 'poison' ? guestSetup.value : C.CARD_LIST[0].id;
+      state.ai.long.poisonType = guestSetup && guestSetup.type === 'poison' ? guestSetup.value : C.POISON_CATEGORIES[0].id;
     }
     if (guestClass === 'langren') {
       state.ai.long.wolfMode = guestSetup && guestSetup.type === 'wolf' ? guestSetup.value : 'A';
@@ -709,10 +900,14 @@
     app.mode = 'lan-host';
     app.game = state;
     app.logCount = state.log.length;
+    app.inspectUid = null;
+    app.lastCardClick = { uid: null, at: 0 };
+    UI.resetVisualState();
     showScreen('game');
     renderGame(false);
     UI.clearToasts();
     UI.toast('联机对局开始！你先手。', 'success');
+    startPlayerTurn();
   }
 
   function sendHostSnapshot() {
@@ -735,26 +930,28 @@
     let result = { ok: true };
     if (action.kind === 'surrender') {
       E.concede(state, 'ai');
+    } else if (action.kind === 'viewOpponent') {
+      if (app.lan) {
+        const cards = state.player.hand.map((c) => ({ uid: c.uid, id: c.id, name: c.name, type: c.type, value: c.value, img: c.img, desc: c.desc }));
+        app.lan.send('viewHand', { cards });
+      }
+      return;
     } else if (state.active !== 'ai') {
       sendGuestError('现在不是你的回合');
       return;
     } else if (action.kind === 'draw') {
       result = E.startDraw(state);
-    } else if (action.kind === 'select') {
-      result = E.selectCard(state, 'ai', action.uid);
-    } else if (action.kind === 'deselect') {
-      result = E.deselectCard(state, 'ai', action.uid);
-    } else if (action.kind === 'setChoice') {
-      result = E.setCardChoice(state, 'ai', action.uid, action.mode);
-    } else if (action.kind === 'clearSelection') {
-      state.ai.selection = [];
-      state.ai.choices = {};
-    } else if (action.kind === 'commit') {
-      result = E.commitTurn(state);
+    } else if (action.kind === 'playCard') {
+      result = E.playCard(state, 'ai', action.uid, { choice: action.choice });
+    } else if (action.kind === 'endTurn' || action.kind === 'commit') {
+      result = E.endTurn(state);
     } else if (action.kind === 'prepAbility') {
       result = E.usePrepAbility(state, 'ai', action.ability, action.payload || {});
     } else if (action.kind === 'ultimate') {
-      result = E.useUltimate(state, 'ai');
+      result = E.useUltimate(state, 'ai', {
+        discardUids: action.discardUids,
+        opponentUids: action.opponentUids,
+      });
     } else {
       sendGuestError('未知操作');
       return;
@@ -765,8 +962,8 @@
       return;
     }
     renderGame(true);
-    if (state.phase === 'gameover') setTimeout(() => showResultNow(), 220);
-    else if (state.phase === 'result') setTimeout(() => showResultNow(), 220);
+    if (state.phase === 'gameover') setTimeout(() => showEnd(), 800);
+    else if (state.phase === 'result') setTimeout(advanceAfterTurn, 350);
   }
 
   function applyGuestSnapshot(view) {
@@ -774,42 +971,42 @@
     if (view.snapshotId && view.snapshotId <= app.guestSnapshotId) return;
     app.guestSnapshotId = view.snapshotId || app.guestSnapshotId;
     const prevActive = app.game ? app.game.active : null;
+    const firstGame = !app.game || app.screen !== 'game';
     app.mode = 'lan-guest';
     app.game = view;
-    if (app.screen !== 'game') {
+    if (firstGame) {
       showScreen('game');
-      app.logCount = view.log ? view.log.length : 0;
+      app.inspectUid = null;
+      app.lastCardClick = { uid: null, at: 0 };
+      app.guestPrepKey = null;
+      UI.resetVisualState();
       UI.closeModal();
+    }
+    if (app.inspectUid && !view.player.hand.some((c) => c.uid === app.inspectUid)) {
+      app.inspectUid = null;
+      UI.hideInspector();
+    }
+    if (prevActive !== view.active) {
+      app.inspectUid = null;
+      app.lastCardClick = { uid: null, at: 0 };
+      app.guestPrepKey = null;
+      UI.hideInspector();
     }
     app.guestBusy = false;
     UI.clearToasts();
     renderGame(false);
-    if (view.phase === 'result' || view.phase === 'gameover') {
-      const key = [view.turn, view.phase, view.active, view.winner].join(':');
-      if (app.guestResultKey !== key) {
-        app.guestResultKey = key;
-        app.guestResultOpen = true;
-        setTimeout(() => {
-          if (app.game === view) showResultNow();
-        }, 90);
-      }
-    } else {
-      app.guestResultKey = null;
-      if (app.guestResultOpen) {
-        app.guestResultOpen = false;
-        UI.closeModal();
-      }
-      if (prevActive !== view.active && view.active === 'player') UI.toast('轮到你的回合', 'success');
-      else if (prevActive !== view.active && view.active === 'ai') UI.toast('对手回合', 'success');
+    if (view.phase === 'gameover') {
+      setTimeout(() => {
+        if (app.game === view) UI.showResult(view, { onRestart: restartGame, onHome: showHome }, { lanGame: true });
+      }, 850);
+      return;
     }
-    if (view.revealedCards && view.revealedCards.length) {
-      const key = 'reveal:' + view.turn + ':' + view.active;
-      if (app.guestRevealKey !== key) {
-        app.guestRevealKey = key;
-        const cards = view.revealedCards.slice();
-        setTimeout(() => UI.showReveal(cards), 350);
-      }
+    if (view.phase === 'prepare' && view.active === 'player') {
+      startGuestTurn();
+      return;
     }
+    if (prevActive !== view.active && view.active === 'player') UI.toast('轮到你的回合', 'success');
+    else if (prevActive !== view.active && view.active === 'ai') UI.toast('对手回合', 'success');
   }
 
   function guestSendAction(kind, data) {
@@ -818,10 +1015,16 @@
     app.guestSendQueue = app.guestSendQueue.then(() => app.lan.send('action', action)).catch(() => {});
   }
 
-  function guestUseAbility(id) {
+  function guestUseAbility(id, onDone) {
     const state = app.game;
-    if (!state) return;
-    if (id === 'ultimate') { askGuestUltimate(); return; }
+    const done = () => { if (typeof onDone === 'function') onDone(); };
+    if (!state) { done(); return; }
+    if (id === 'ultimate') { askGuestUltimate(done); return; }
+    if (id === 'viewOpponent') {
+      guestSendAction('viewOpponent');
+      done();
+      return;
+    }
     if (id === 'cute') {
       const cards = state.player.hand.filter((c) => c.type === 'break' || c.type === 'normal');
       UI.showCardPicker({
@@ -829,15 +1032,8 @@
         subtitle: '选择 1 张伤害牌转化为护甲牌',
         cards,
         empty: '手中没有伤害牌。',
-        onPick(card) { guestSendAction('prepAbility', { ability: 'cute', payload: { uid: card.uid } }); UI.toast('已发送转化请求…'); },
-      });
-      return;
-    }
-    if (id === 'destiny') {
-      UI.showTypePicker({
-        title: '命定 · 指定对手下一张牌',
-        subtitle: '每局一次，房主端会执行命定',
-        onPick(cardId) { guestSendAction('prepAbility', { ability: 'destiny', payload: { cardId } }); UI.toast('已发送命定…'); },
+        onPick(card) { guestSendAction('prepAbility', { ability: 'cute', payload: { uid: card.uid } }); UI.toast('已发送转化请求…'); done(); },
+        onCancel: done,
       });
       return;
     }
@@ -847,16 +1043,19 @@
         subtitle: '选择 1 张已出过的牌',
         cards: state.player.discard.slice(),
         empty: '弃牌堆还是空的。',
-        onPick(card) { guestSendAction('prepAbility', { ability: 'scavenge', payload: { uid: card.uid } }); UI.toast('已发送开拓…'); },
+        onPick(card) { guestSendAction('prepAbility', { ability: 'scavenge', payload: { uid: card.uid } }); UI.toast('已发送开拓…'); done(); },
+        onCancel: done,
       });
       return;
     }
     if (id === 'withered') {
       UI.confirm({
         title: '竭泽',
+        dismissable: false,
         html: '请求房主执行手牌与牌库互换。',
         okLabel: '交换',
-        onOk() { guestSendAction('prepAbility', { ability: 'withered' }); UI.toast('已发送竭泽请求…'); },
+        onOk() { guestSendAction('prepAbility', { ability: 'withered' }); UI.toast('已发送竭泽请求…'); done(); },
+        onCancel: done,
       });
       return;
     }
@@ -870,7 +1069,9 @@
         onPick(card) {
           guestSendAction('prepAbility', { ability: 'selfHarm', payload: { uid: card.uid } });
           UI.toast('已发送【新生】…');
+          done();
         },
+        onCancel: done,
       });
       return;
     }
@@ -878,27 +1079,27 @@
     if (map[id]) {
       guestSendAction('prepAbility', { ability: map[id] });
       UI.toast('已发送操作，等待房主同步…');
+      done();
+      return;
+    }
+    done();
+  }
+
+  function applyUltimateSetting(silent) {
+    const el = document.getElementById('ultimate-state');
+    if (el) el.textContent = app.ultimatesEnabled ? '必杀：启用' : '必杀：关闭';
+    UI.ultimatesEnabled = app.ultimatesEnabled;
+    try { localStorage.setItem('dd_ultimates', app.ultimatesEnabled ? '1' : '0'); } catch (e) { /* private mode */ }
+    if (app.screen === 'home') UI.updateHomeSelection(app.selectedClass);
+    if (!silent) {
+      UI.toast(app.ultimatesEnabled ? '隐藏开关：必杀技已启用' : '隐藏开关：必杀技已关闭', app.ultimatesEnabled ? 'success' : '');
+      UI.Sound.play(app.ultimatesEnabled ? 'ult' : 'deselect');
     }
   }
 
-  function askGuestUltimate() {
-    const state = app.game;
-    if (!state) return;
-    if (state.active !== 'player') { UI.toast('当前是对手回合', 'error'); return; }
-    const cls = state.player.char;
-    const can = E.canUseUltimate(state, 'player');
-    if (!can.ok) { UI.toast(can.reason, 'error'); return; }
-    UI.confirm({
-      title: '必杀 · ' + cls.ultimateName,
-      subtitle: '每局仅限一次 · 由房主端执行',
-      html: `<b>效果</b><br>${esc(cls.ultimateText)}<br><br><b>代价</b><br>${esc(cls.ultimateCost)}`,
-      okLabel: '发动必杀',
-      danger: true,
-      onOk() {
-        guestSendAction('ultimate');
-        UI.toast('已发送必杀，等待房主同步…', 'success');
-      },
-    });
+  function toggleUltimates() {
+    app.ultimatesEnabled = !app.ultimatesEnabled;
+    applyUltimateSetting(false);
   }
 
   /* ---------------- 事件绑定 ---------------- */
@@ -907,9 +1108,23 @@
     $('#class-grid').addEventListener('click', (e) => {
       const btn = e.target.closest('.class-card');
       if (!btn) return;
-      app.selectedClass = btn.dataset.classId;
+      const classId = btn.dataset.classId;
+      app.selectedClass = classId;
       UI.updateHomeSelection(app.selectedClass);
       UI.Sound.play('click');
+      // 隐藏开关：连续点击预言家 5 次，切换必杀技启用状态
+      if (classId === 'yuyanjia') {
+        const now = Date.now();
+        if (now - app.ultClickAt > 900) app.ultClickCount = 0;
+        app.ultClickAt = now;
+        app.ultClickCount += 1;
+        if (app.ultClickCount >= 5) {
+          app.ultClickCount = 0;
+          toggleUltimates();
+        }
+      } else {
+        app.ultClickCount = 0;
+      }
     });
     $('#btn-random-class').addEventListener('click', () => {
       const pool = C.CLASS_LIST.filter((c) => c.id !== app.selectedClass);
@@ -925,10 +1140,9 @@
       if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
       UI.Sound.play('click');
     });
+    $('#btn-tutorial').addEventListener('click', UI.showTutorial);
     $('#btn-rules-home').addEventListener('click', UI.showRules);
     $('#btn-rules-game').addEventListener('click', UI.showRules);
-    $('#btn-log').addEventListener('click', () => app.game && UI.showLog(app.game));
-    $('#btn-feed-more').addEventListener('click', () => app.game && UI.showLog(app.game));
     $('#btn-sound').addEventListener('click', toggleSound);
     $('#btn-sound-game').addEventListener('click', toggleSound);
     window.addEventListener('pointerdown', () => UI.ensureAudio(), { once: true });
@@ -943,16 +1157,15 @@
       const btn = e.target.closest('[data-action]');
       if (!btn) return;
       UI.Sound.play('click');
-      if (btn.dataset.action === 'draw') enterDraw();
-      else if (btn.dataset.action === 'commit') commitTurn();
+      if (btn.dataset.action === 'commit') endPlayerTurn();
     });
     $('#hand').addEventListener('click', (e) => {
       const card = e.target.closest('.card');
       if (!card) return;
-      selectHandCard(card.dataset.uid);
+      inspectOrPlayCard(card.dataset.uid);
     });
-    $('#btn-clear-select').addEventListener('click', clearSelection);
-    $('#btn-commit').addEventListener('click', () => { UI.Sound.play('click'); commitTurn(); });
+    $('#btn-clear-select').addEventListener('click', closeInspector);
+    $('#btn-commit').addEventListener('click', () => { UI.Sound.play('click'); endPlayerTurn(); });
     $('#ability-bar').addEventListener('click', (e) => {
       const btn = e.target.closest('[data-ability]');
       if (!btn || btn.disabled) return;
@@ -988,6 +1201,7 @@
 
   /* ---------------- 启动 ---------------- */
   function init() {
+    applyUltimateSetting(true);
     UI.renderHome(app.selectedClass);
     UI.setSoundUI();
     bind();
@@ -995,7 +1209,7 @@
     let seen = null;
     try { seen = localStorage.getItem('dd_seen_intro'); localStorage.setItem('dd_seen_intro', '1'); } catch (e) { /* private mode */ }
     if (!seen) {
-      setTimeout(() => UI.toast('选择职业 → 开始对局。双方轮流行动，每回合摸 2 张、出至多 2 张。'), 700);
+      setTimeout(() => UI.toast('选择职业 → 开始对局。回合开始自动摸牌；单击查看、双击出牌，每张牌立即结算。'), 700);
     }
   }
 

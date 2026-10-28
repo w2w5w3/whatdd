@@ -160,6 +160,30 @@
       view.seerAll = { player: JSON.parse(JSON.stringify(hostState.seerAll.ai)) };
     }
 
+    // 实时事件：把房主视角映射到加入者视角；打出的牌本身是公开信息。
+    view.lastPlay = null;
+    view.lastDraw = null;
+    view.lastShieldHit = null;
+    if (hostState.lastPlay) {
+      view.lastPlay = JSON.parse(JSON.stringify(hostState.lastPlay));
+      view.lastPlay.sideId = hostState.lastPlay.sideId === 'player' ? 'ai' : 'player';
+      view.lastPlay.logs = sanitizeLogs(hostState, hostState.lastPlay.logs || []);
+    }
+    if (hostState.lastDraw) {
+      view.lastDraw = {
+        seq: hostState.lastDraw.seq,
+        sideId: hostState.lastDraw.sideId === 'player' ? 'ai' : 'player',
+        count: hostState.lastDraw.count,
+      };
+    }
+
+    if (hostState.lastShieldHit) {
+      view.lastShieldHit = {
+        seq: hostState.lastShieldHit.seq,
+        sideId: hostState.lastShieldHit.sideId === 'player' ? 'ai' : 'player',
+        broken: hostState.lastShieldHit.broken,
+      };
+    }
     view.log = sanitizeLogs(hostState, hostState.log);
     if (hostState.lastResult) {
       const lr = Object.assign({}, hostState.lastResult);
