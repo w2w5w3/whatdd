@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <meta name="theme-color" content="#0d1016" />
+  <meta name="description" content="我的刀盾 · 修正版 — 回合制卡牌对战，支持单人 vs 电脑与局域网双人联机。" />
+  <title>我的刀盾 · 修正版</title>
+  <link rel="icon" href="assets/icon-192.png" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="我的刀盾" />
+  <link rel="stylesheet" href="css/style.css?v=1.5.1" />
+</head>
+<body>
+  <div id="app">
+    <!-- ================= 首页 ================= -->
+    <section id="screen-home" class="screen home-screen">
+      <div class="home-bg" aria-hidden="true">
+        <div class="home-orb orb-a"></div>
+        <div class="home-orb orb-b"></div>
+        <div class="home-grid"></div>
+      </div>
+      <header class="home-top">
+        <div class="brand-mini">
+          <span class="brand-glyph">刃</span>
+          <span class="brand-mini-text">刀盾 <i>DOUBLE EDGE</i></span>
+        </div>
+        <div class="home-top-actions">
+          <button class="ghost-btn" id="btn-sound" type="button" title="音效开关">🔊 <span>音效</span></button>
+          <button class="ghost-btn" id="btn-tutorial" type="button">🎓 <span>新手教程</span></button>
+          <button class="ghost-btn" id="btn-rules-home" type="button">📜 <span>完整规则</span></button>
+        </div>
+      </header>
+
+      <div class="home-main">
+        <section class="hero">
+          <div class="hero-kicker"><span></span> 双生刀盾 · 回合制对战 · 一决生死 <span></span></div>
+          <h1 class="hero-title">
+            <span class="title-line">我的刀盾</span>
+            <span class="title-sub">修正版<em>REVISED</em></span>
+          </h1>
+          <p class="hero-lead">30 张固定牌库，23 位个性职业。<br />双方轮流行动，用破甲、叠盾与斩杀线赢下对决。</p>
+
+          <div class="hero-actions">
+            <button class="primary-btn hero-start" id="btn-start" type="button">
+              <span class="btn-shine"></span>
+              <span>开始对局</span>
+              <small>VS 电脑</small>
+            </button>
+            <button class="secondary-btn" id="btn-random-class" type="button">🎲 随机职业</button>
+            <button class="secondary-btn lan-btn" id="btn-lan" type="button">🌐 局域网联机</button>
+            <button class="ghost-btn hero-jump" id="btn-jump-classes" type="button">浏览全部职业 ↓</button>
+          </div>
+
+          <div class="hero-meta">
+            <div><b>23</b><span>可选职业</span></div>
+            <div><b>30</b><span>固定牌库</span></div>
+            <div><b>2</b><span>每回合出牌</span></div>
+            <div><b>∞</b><span>重开对局</span></div>
+          </div>
+
+          <div class="selected-preview" id="selected-preview"><!-- filled by JS --></div>
+        </section>
+
+        <section class="picker-panel">
+          <div class="picker-head">
+            <div>
+              <div class="panel-kicker">CHOOSE YOUR EDGE</div>
+              <h2>选择你的职业</h2>
+            </div>
+            <div class="picker-count"><span id="class-count">23</span> / 23</div>
+          </div>
+          <div class="class-grid" id="class-grid"><!-- filled by JS --></div>
+          <p class="picker-tip">点击职业查看被动与必杀 · 整局不可更换</p>
+        </section>
+      </div>
+
+      <footer class="home-footer">
+        <span>同人二创 · 非商业用途</span>
+        <span class="dot">·</span>
+        <span>支持手机 / 平板 / 电脑</span>
+        <span class="dot">·</span>
+        <span>v1.5.1</span>
+        <span class="dot">·</span>
+        <span id="ultimate-state">必杀：启用</span>
+      </footer>
+    </section>
+
+    <!-- ================= 对局 ================= -->
+    <section id="screen-game" class="screen game-screen hidden">
+      <header class="game-topbar">
+        <div class="game-brand">
+          <span class="brand-glyph small">刃</span>
+          <div>
+            <b>我的刀盾</b>
+            <small>修正版</small>
+          </div>
+        </div>
+        <div class="round-hud">
+          <span class="round-label">第 <b id="hud-round">1</b> 回合</span>
+          <span class="phase-pill" id="hud-phase">准备阶段</span>
+        </div>
+        <div class="game-top-actions">
+          <button class="icon-btn" id="btn-rules-game" type="button" title="规则">❔</button>
+          <button class="icon-btn" id="btn-sound-game" type="button" title="音效">🔊</button>
+          <button class="icon-btn danger" id="btn-surrender" type="button" title="认输">🏳</button>
+        </div>
+      </header>
+
+      <main class="arena">
+        <!-- 对手 -->
+        <section class="fighter fighter-ai" id="fighter-ai">
+          <div class="shield-aura hidden" id="ai-shield-aura"></div>
+          <div class="fighter-art" id="ai-art"></div>
+          <div class="fighter-info">
+            <div class="fighter-heading">
+              <div class="fighter-name-wrap">
+                <span class="fighter-side">对手</span>
+                <h3 id="ai-name">—</h3>
+              </div>
+              <div class="hand-count" id="ai-hand-count" title="对手手牌">🂠 <b>0</b></div>
+            </div>
+            <div class="hp-row">
+              <div class="hp-bar"><span id="ai-hp-fill"></span><i id="ai-hp-ghost"></i></div>
+              <div class="hp-num"><b id="ai-hp">20</b><small id="ai-max-hp">/20</small></div>
+            </div>
+            <div class="stat-row">
+              <div class="stat-chip armor-chip" id="ai-armor-chip"><span>🛡</span><b id="ai-armor">0</b><small>护甲</small></div>
+              <div class="stat-chip"><span>牌库</span><b id="ai-deck">30</b></div>
+              <div class="stat-chip"><span>弃牌</span><b id="ai-discard">0</b></div>
+            </div>
+            <div class="status-chips" id="ai-status"></div>
+            <div class="fighter-skill" id="ai-skill"></div>
+            <div class="hand-backs" id="ai-hand-backs" title="对手手牌"></div>
+            <div class="captain-counter hidden" id="ai-captain"></div>
+          </div>
+        </section>
+
+        <!-- 中央战场 -->
+        <section class="battlefield">
+          <div class="battlefield-top">
+            <div class="round-seal"><span>ROUND</span><b id="stage-round">01</b></div>
+            <div class="phase-copy">
+              <div class="phase-kicker" id="phase-kicker">准备阶段</div>
+              <div class="phase-hint" id="phase-hint">查看状态，然后进入摸牌阶段</div>
+            </div>
+            <div class="turn-actions" id="turn-actions"><!-- prepare / play buttons --></div>
+          </div>
+
+          <div class="duel-stage" id="duel-stage">
+            <div class="duel-side left">
+              <div class="duel-avatar" id="duel-ai-avatar"></div>
+              <div class="duel-armor" id="duel-ai-armor">0</div>
+            </div>
+            <div class="duel-vs">
+              <div class="clash-symbol">⚔</div>
+              <div class="clash-line"></div>
+              <div class="clash-round" id="clash-round">第 1 回合</div>
+            </div>
+            <div class="duel-side right">
+              <div class="duel-avatar" id="duel-player-avatar"></div>
+              <div class="duel-armor" id="duel-player-armor">0</div>
+            </div>
+          </div>
+
+          <div class="intel-strip" id="intel-strip"><!-- 预言家揭示 etc --></div>
+          <div class="turn-toast-line" id="turn-toast-line"></div>
+        </section>
+
+        <!-- 玩家 -->
+        <section class="fighter fighter-player" id="fighter-player">
+          <div class="shield-aura hidden" id="player-shield-aura"></div>
+          <div class="fighter-art" id="player-art"></div>
+          <div class="fighter-info">
+            <div class="fighter-heading">
+              <div class="fighter-name-wrap">
+                <span class="fighter-side me">你</span>
+                <h3 id="player-name">—</h3>
+              </div>
+              <div class="hand-count" id="player-hand-count" title="你的手牌">🂠 <b>0</b></div>
+            </div>
+            <div class="hp-row">
+              <div class="hp-bar player"><span id="player-hp-fill"></span><i id="player-hp-ghost"></i></div>
+              <div class="hp-num"><b id="player-hp">20</b><small id="player-max-hp">/20</small></div>
+            </div>
+            <div class="stat-row">
+              <div class="stat-chip armor-chip" id="player-armor-chip"><span>🛡</span><b id="player-armor">0</b><small>护甲</small></div>
+              <div class="stat-chip"><span>牌库</span><b id="player-deck">30</b></div>
+              <div class="stat-chip"><span>弃牌</span><b id="player-discard">0</b></div>
+            </div>
+            <div class="status-chips" id="player-status"></div>
+            <div class="fighter-skill" id="player-skill"></div>
+            <div class="hand-backs" id="player-hand-backs" title="你的手牌"></div>
+            <div class="captain-counter hidden" id="player-captain"></div>
+          </div>
+        </section>
+      </main>
+
+      <!-- 手牌区 -->
+      <section class="hand-dock">
+        <div class="hand-head">
+          <div class="hand-title">
+            <span class="hand-kicker">YOUR HAND</span>
+            <b>手牌</b>
+            <span class="hand-count-inline" id="hand-limit">0 / 2</span>
+          </div>
+          <div class="selected-slot" id="selected-slot"></div>
+        </div>
+        <div class="hand-scroll" id="hand-scroll">
+          <div class="hand" id="hand"><!-- cards --></div>
+        </div>
+        <div class="hand-tips" id="hand-tips"></div>
+      </section>
+
+      <!-- 操作栏 -->
+      <section class="command-dock">
+        <div class="ability-bar" id="ability-bar"></div>
+        <div class="command-main">
+          <button class="ghost-action" id="btn-clear-select" type="button">关闭详情</button>
+          <button class="commit-btn" id="btn-commit" type="button">
+            <span id="commit-label">结束回合</span>
+            <small id="commit-sub">结束本回合，进入结算</small>
+          </button>
+        </div>
+      </section>
+    </section>
+  </div>
+
+  <div id="card-inspector" class="card-inspector hidden" aria-live="polite"></div>
+  <div id="play-reveal" class="play-reveal hidden" aria-live="polite"></div>
+  <div id="draw-anim" class="draw-anim" aria-hidden="true"></div>
+
+  <div id="modal-root" class="modal-root" aria-live="polite"></div>
+  <div id="toast-root" class="toast-root"></div>
+
+  <script src="js/config.js?v=1.5.1"></script>
+  <script src="js/engine.js?v=1.5.1"></script>
+  <script src="js/ai.js?v=1.5.1"></script>
+  <script src="js/lan.js?v=1.5.1"></script>
+  <script src="js/ui.js?v=1.5.1"></script>
+  <script src="js/main.js?v=1.5.1"></script>
+</body>
+</html>
