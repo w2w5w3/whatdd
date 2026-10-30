@@ -136,6 +136,8 @@
       case 'langren': use = side.hp > 8 && (round2 || foeLow); break;
       case 'dao': use = foeLow || round2; break;
       case 'shihuangzhe': use = lowHand || round2; break;
+      case 'saint': use = side.hp <= 12 || round2; break;
+      case 'dutu': use = foeLow || round2; break;
       case 'chuanzhang': use = side.hp > 5 && (foeLow || round2); break;
       default: use = false;
     }
@@ -153,34 +155,34 @@
     // 三月七：转化伤害牌为护甲
     if (side.classId === 'sanyueqi' && side.long.cuteWindowTurn === side.turnsTaken && !side.temp.cuteUsed) {
       const dmg = side.hand.filter((c) => c.type === 'break' || c.type === 'normal').sort((a, b) => b.value - a.value)[0];
-      if (dmg) E.usePrepAbility(state, 'ai', 'cute', { uid: dmg.uid });
+      if (dmg) E.usePrepAbility(state, side.id, 'cute', { uid: dmg.uid });
     }
     // 沉思语：额外摸牌
     if (side.classId === 'chensiyu' && !side.long.meditationUsed && side.hand.length <= 3) {
-      E.usePrepAbility(state, 'ai', 'meditation');
+      E.usePrepAbility(state, side.id, 'meditation');
     }
     // 枯牌先知
     if (side.classId === 'kupai' && !side.long.witheredUsed && side.hp <= 4 && side.hand.length <= 4) {
-      E.usePrepAbility(state, 'ai', 'withered');
+      E.usePrepAbility(state, side.id, 'withered');
     }
     // 魔术手：手牌足够时跳过摸牌，换取 3 张出牌
     if (side.classId === 'moshushou' && state.phase === 'prepare' && !side.temp.skipDraw) {
       const playable = playableCards(state, side);
       const hasNingshen = side.hand.some((c) => c.id === 'ningshen');
       if (playable.length >= 3 && !hasNingshen && side.hp > 8 && rand(state) < 0.65) {
-        E.usePrepAbility(state, 'ai', 'magicianSkip');
+        E.usePrepAbility(state, side.id, 'magicianSkip');
       }
     }
     // 拾荒者：弃牌堆有高价值牌
     if (side.classId === 'shihuangzhe' && side.discard.length > 0 && side.hand.length <= 4) {
       const best = side.discard.slice().sort((a, b) => b.value - a.value)[0];
       if (best && (best.type === 'normal' || best.type === 'break' || best.value >= 5)) {
-        E.usePrepAbility(state, 'ai', 'scavenge', { uid: best.uid });
+        E.usePrepAbility(state, side.id, 'scavenge', { uid: best.uid });
       }
     }
     // 狼人 B 模式：血量充裕时赌一把
     if (side.classId === 'langren' && side.long.wolfMode === 'B' && side.hp > 8 && rand(state) < 0.55) {
-      E.usePrepAbility(state, 'ai', 'wolfJudge');
+      E.usePrepAbility(state, side.id, 'wolfJudge');
     }
     // 殉情者：中期开启同殇
     if (side.classId === 'xunqing' && !side.long.sameSorrow && side.hp > 10 && foe.hp < 12) {
@@ -191,13 +193,16 @@
   function beforeCards(state) {
     const side = state.ai;
     if (!side || state.phase !== 'play') return;
+    if (side.classId === 'rose' && !side.long.delayedCard && side.hand.length > 0) {
+      E.setRoseDelay(state, side.id, true);
+    }
     if (E.canUseUltimate(state, side.id).ok) {
       tryUltimate(state, side);
       if (state.phase === 'gameover') return;
     }
     // 预言家：命定常驻能力，手牌少且对方手牌多时沉底 2 张
     if (side.classId === 'yuyanjia' && !side.long.divineUsed && side.hand.length <= 2 && E._internal.otherSide(state, side).hand.length >= 2) {
-      E.useDivine(state, 'ai', {});
+      E.useDivine(state, side.id, {});
     }
     // 燃血行者：如果护盾能完全挡住攻击卡数值，用【新生】换一次回合末回复
     if (side.classId === 'ranxue' && !side.temp.selfHarm) {
@@ -206,7 +211,7 @@
         .filter((c) => c.type === 'break' || c.type === 'normal')
         .sort((a, b) => b.value - a.value)
         .find((c) => c.value <= shield);
-      if (atk) E.usePrepAbility(state, 'ai', 'selfHarm', { uid: atk.uid });
+      if (atk) E.usePrepAbility(state, side.id, 'selfHarm', { uid: atk.uid });
     }
   }
 
@@ -217,6 +222,10 @@
     if (!picks.length) return null;
     const card = picks[0];
     const choices = pickModes(state, side, [card]);
+    if (side.classId === 'dutu' && !side.temp.gamblerBet && side.deck.length > 0) {
+      const guess = ['normal', 'break', 'rest', 'armor'][Math.floor(rand(state) * 4)];
+      E.placeGamble(state, side.id, guess);
+    }
     return { uid: card.uid, choice: choices[card.uid] || null };
   }
 
@@ -225,6 +234,9 @@
     if (!side || state.phase !== 'play') return { uids: [], choices: {} };
     // 必杀（若使用可能造成伤害/抽牌，再重新选牌）
     let ult = false;
+    if (side.classId === 'rose' && !side.long.delayedCard && side.hand.length > 0) {
+      E.setRoseDelay(state, side.id, true);
+    }
     if (E.canUseUltimate(state, side.id).ok) {
       ult = tryUltimate(state, side);
       if (state.phase === 'gameover') return { uids: [], choices: {}, ultimate: ult };
@@ -236,7 +248,7 @@
         .filter((c) => c.type === 'break' || c.type === 'normal')
         .sort((a, b) => b.value - a.value)
         .find((c) => c.value <= shield);
-      if (atk) E.usePrepAbility(state, 'ai', 'selfHarm', { uid: atk.uid });
+      if (atk) E.usePrepAbility(state, side.id, 'selfHarm', { uid: atk.uid });
     }
     const picks = chooseCards(state, side);
     const choices = pickModes(state, side, picks);

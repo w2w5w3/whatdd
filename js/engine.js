@@ -33,7 +33,14 @@
 
   function cardDef(id) { return CONFIG.CARDS[id]; }
   function charDef(id) { return CONFIG.CLASSES[id]; }
-  function otherSide(state, side) { return side.id === 'player' ? state.ai : state.player; }
+  function otherSide(state, side) {
+    if (state.duo) {
+      const sides = state.duo.sides;
+      if (side.id === state.duo.targetId) return sides[state.duo.activeId];
+      return sides[state.duo.targetId];
+    }
+    return side.id === 'player' ? state.ai : state.player;
+  }
 
   function makeCard(state, id, extra) {
     const def = cardDef(id);
@@ -117,7 +124,10 @@
         babyBonusMaxHp: 0,
         fanrenGuardUntil: 0,
         chensiyuTax: false,
+        chensiyuTaxTurn: -1,
         chensiyuNingshenTurn: -1,
+        saintPunishTurn: 0,
+        saintPunishUsed: false,
         skyUsed: false,
         sameSorrow: false,
         cutePending: false,
@@ -132,6 +142,7 @@
         extraArmorTier: null,
         captainCount: 0,
         captainProgress: 0,
+        gamblerHalfNext: false,
         delayedCard: null,
       },
       status: {
@@ -161,6 +172,8 @@
       armorBonus: 0,
       healBonus: 0,
       skipPlay: false,
+      delayActive: false,
+      gamblerBet: null,
       freePlayUids: [],
       breakMultiplier: 1,
       ignoreArmorAll: false,
@@ -421,8 +434,21 @@
       if (!amount) return 0;
     }
     const before = side.hp;
+    const actualLoss = Math.min(amount, before);
     side.hp = Math.max(0, side.hp - amount);
     onHpLost(state, side, before, side.hp);
+    if (side.classId === 'saint' && side.long.saintPunishTurn === state.turn && !side.long.saintPunishUsed && actualLoss > 0 && opts.sourceId) {
+      const source = state[opts.sourceId];
+      if (source && source !== side && source.hp > 0) {
+        const cut = Math.floor(actualLoss / 2);
+        if (cut > 0) {
+          side.long.saintPunishUsed = true;
+          source.maxHp = Math.max(1, source.maxHp - cut);
+          source.hp = Math.min(source.hp, source.maxHp);
+          log(state, side.name + ' 的【圣诫】触发：' + source.name + ' 造成 ' + actualLoss + ' 点伤害，扣除其 ' + cut + ' 点生命上限', 'passive', side.id);
+        }
+      }
+    }
     if (opts.silent !== true) {
       log(state, side.name + ' 失去 ' + amount + ' 点生命' + (opts.label ? '（' + opts.label + '）' : '') + '，剩余 ' + side.hp, 'damage', side.id);
     }
@@ -549,10 +575,10 @@
     }
     if (drawn.length < n) log(state, side.name + ' 牌库不足，只摸到 ' + drawn.length + ' 张', 'draw', side.id);
     if (drawn.length > 0) {
-      if (side.classId === 'chensiyu' && side.long.chensiyuTax) {
+      if (side.classId === 'chensiyu' && side.long.chensiyuTaxTurn === state.turn) {
         const foe = otherSide(state, side);
-        drawn.forEach(() => addArmor(state, foe, 1, '沉思语的代价'));
-        log(state, side.name + ' 的【灵魂烧烤】代价：' + foe.name + ' 获得 ' + drawn.length + ' 点护盾', 'passive', side.id);
+        drawn.forEach(() => healSide(state, foe, 1, '沉思语的代价'));
+        log(state, side.name + ' 的【灵魂烧烤】代价：本回合每摸 1 张牌，' + foe.name + ' 回复 1 点生命（本次 ' + drawn.length + ' 张）', 'passive', side.id);
       }
       state.drawSeq += 1;
       state.lastDraw = { seq: state.drawSeq, sideId: side.id, count: drawn.length };
@@ -598,12 +624,18 @@
     let limit = CONFIG.BASE_PLAY_LIMIT + (side.temp.playLimitBonus || 0);
     if (side.temp.skipKind === 'magician') limit = Math.max(limit, 3);
     if (isWolfForm(state, side)) limit += 1;
-    if (side.classId === 'rose') limit = 1;
+    if (side.classId === 'rose' && side.temp.delayActive) limit = 1;
     return limit;
   }
 
   function cardModeOptions(state, side, card) {
     if (!card) return [];
+    if (side.classId === 'saint' && (card.type === 'armor' || card.type === 'rest')) {
+      return [
+        { id: 'self', label: '正常使用（自己）' },
+        { id: 'bless', label: '赐福（对对方使用）' },
+      ];
+    }
     if (card.type === 'rest' && (card.id === 'tiaoxi' || card.id === 'huanyu') && side.classId === 'dunai') {
       return [
         { id: 'heal', label: '回复自己 ' + card.value + ' 点生命' },
@@ -619,7 +651,6 @@
     if (state.pendingKuaishou) return { ok: false, reason: '请先完成偷牌选择' };
     if (side.status.frozenTurn === side.turnsTaken) return { ok: false, reason: '被【冰刻箭雨之时】冻结，本回合无法出牌' };
     if (side.temp.skipPlay) return { ok: false, reason: '本回合跳过出牌' };
-    if (side.classId === 'rose' && side.long.delayedCard) return { ok: false, reason: '【延授】牌尚未结算，本回合不能再出牌' };
     if (!card) return { ok: false, reason: '牌不存在' };
     const inHand = side.hand.some((c) => c.uid === card.uid);
     if (!inHand) return { ok: false, reason: '这张牌不在手中' };
@@ -849,7 +880,7 @@
     const side = state[sideId];
     if (!side) return { discard: 0, discardAll: false, hp: 0 };
     const charId = side.classId;
-    const needDiscard = { kupai: 2, dao: 2, chuanzhang: 2, rose: 1, sanyueqi: 1, jianbi: 1, chuanxi: 1, suyu: 1, shihuangzhe: 1 }[charId] || 0;
+    const needDiscard = { kupai: 2, dao: 2, chuanzhang: 2, rose: 1, dutu: 1, saint: 1, sanyueqi: 1, jianbi: 1, chuanxi: 1, suyu: 1, shihuangzhe: 1 }[charId] || 0;
     const selfCost = { yuxue: 4, ranxue: 3, pojiazhankuang: 3, dunai: 2, nvwu: 3, langren: 6 }[charId] || 0;
     return { discard: needDiscard, discardAll: false, hp: selfCost };
   }
@@ -901,7 +932,7 @@
     const charId = side.classId;
 
     // 代价检查
-    const needDiscard = { kupai: 2, dao: 2, chuanzhang: 2, rose: 1, sanyueqi: 1, jianbi: 1, chuanxi: 1, suyu: 1, shihuangzhe: 1 }[charId] || 0;
+    const needDiscard = { kupai: 2, dao: 2, chuanzhang: 2, rose: 1, dutu: 1, saint: 1, sanyueqi: 1, jianbi: 1, chuanxi: 1, suyu: 1, shihuangzhe: 1 }[charId] || 0;
     if (side.hand.length < needDiscard) return { ok: false, error: '手牌不足以支付必杀代价' };
     const selfCost = { yuxue: 4, ranxue: 3, pojiazhankuang: 3, dunai: 2, nvwu: 3, langren: 6 }[charId] || 0;
     if (selfCost && side.hp <= selfCost) return { ok: false, error: '生命不足以支付必杀代价' };
@@ -950,9 +981,9 @@
       case 'chensiyu': {
         const ns = makeCard(state, 'ningshen');
         side.hand.push(ns);
-        side.long.chensiyuTax = true;
+        side.long.chensiyuTaxTurn = state.turn;
         side.long.chensiyuNingshenTurn = state.turn;
-        log(state, side.name + ' 发动【灵魂烧烤】：生成一张凝神；本回合打出凝神后额外获得 1 次出牌机会；此后每摸 1 张牌，对方获得 1 点护盾', 'ultimate', side.id);
+        log(state, side.name + ' 发动【灵魂烧烤】：生成一张凝神；本回合每次打出凝神都额外获得 1 次出牌机会；本回合每摸 1 张牌，对方回复 1 点生命', 'ultimate', side.id);
         break;
       }
       case 'rose': {
@@ -967,12 +998,33 @@
         }
         break;
       }
+      case 'saint':
+        healSide(state, side, 5, '圣光');
+        addArmor(state, side, 3, '圣光');
+        log(state, side.name + ' 发动【圣光】：回复 5 点生命并获得 3 点护甲', 'ultimate', side.id);
+        break;
+      case 'dutu': {
+        const top = side.deck.shift();
+        if (top) {
+          if (top.type === 'normal' || top.type === 'break') {
+            directDamage(state, side, foe, 7, { label: '梭哈', noReflect: false });
+            log(state, side.name + ' 梭哈翻开「' + top.name + '」，造成 7 点真实伤害', 'ultimate', side.id);
+          } else {
+            healSide(state, side, 4, '梭哈');
+            log(state, side.name + ' 梭哈翻开「' + top.name + '」，回复 4 点生命', 'ultimate', side.id);
+          }
+          side.discard.push(top);
+        } else {
+          log(state, side.name + ' 牌库为空，梭哈没有翻开牌', 'status', side.id);
+        }
+        break;
+      }
       case 'kuaishou': {
         const declared = ['normal', 'break', 'rest', 'armor'].indexOf(opts.declaredType) >= 0 ? opts.declaredType : 'normal';
         const cards = [];
         for (let i = 0; i < 3 && foe.deck.length > 0; i += 1) cards.push(foe.deck.shift());
         const matches = cards.filter((c) => c.type === declared).length;
-        const maxPick = Math.max(0, matches - 1);
+        const pickCount = Math.min(matches, cards.length);
         state.kuaishouUltSeq += 1;
         state.lastKuaishouUlt = {
           seq: state.kuaishouUltSeq,
@@ -981,20 +1033,23 @@
           declaredLabel: CONFIG.TYPE_META[declared] ? CONFIG.TYPE_META[declared].label : declared,
           cards: cards.map((c) => ({ id: c.id, name: c.name, type: c.type, value: c.value, img: c.img })),
           matches,
-          maxPick,
+          maxPick: pickCount,
         };
         log(state, side.name + ' 宣言【' + (CONFIG.TYPE_META[declared] ? CONFIG.TYPE_META[declared].label : declared) + '】，从对方牌库顶端摸到 ' + cards.length + ' 张，其中符合宣言 ' + matches + ' 张', 'ultimate', side.id);
         if (!cards.length) break;
-        if (matches === 0 || maxPick === 0) {
+        if (matches === 0) {
           cards.forEach((c) => foe.hand.push(c));
           log(state, '宣言牌数量不足，全部加入对方手牌', 'ultimate', side.id);
+        } else if (pickCount >= cards.length) {
+          cards.forEach((c) => side.hand.push(c));
+          log(state, side.name + ' 将全部 ' + cards.length + ' 张加入手牌', 'ultimate', side.id);
         } else if (side.isAI || !opts.declaredType) {
-          const chosen = cards.filter((c) => c.type === declared).slice(0, maxPick);
+          const chosen = cards.filter((c) => c.type === declared).slice(0, pickCount);
           const chosenUids = chosen.map((c) => c.uid);
           cards.forEach((c) => (chosenUids.indexOf(c.uid) >= 0 ? side.hand.push(c) : foe.hand.push(c)));
           log(state, side.name + ' 将 ' + chosen.length + ' 张加入手牌，其余加入对方手牌', 'ultimate', side.id);
         } else {
-          state.pendingKuaishou = { sideId: side.id, cards, declared, maxPick };
+          state.pendingKuaishou = { sideId: side.id, cards, declared, minPick: pickCount, maxPick: pickCount };
         }
         break;
       }
@@ -1092,7 +1147,12 @@
     if (!pending) return { ok: false, error: '没有待选择的偷牌' };
     const side = state[pending.sideId];
     const foe = otherSide(state, side);
-    const chosen = (uids || []).filter((uid) => pending.cards.some((c) => c.uid === uid)).slice(0, pending.maxPick == null ? 2 : pending.maxPick);
+    const need = pending.maxPick == null ? 0 : pending.maxPick;
+    const chosen = (uids || []).filter((uid) => pending.cards.some((c) => c.uid === uid)).slice(0, need);
+    if (chosen.length < need) {
+      const pool = pending.cards.filter((c) => chosen.indexOf(c.uid) < 0);
+      while (chosen.length < need && pool.length) chosen.push(pool.shift().uid);
+    }
     const chosenCards = [];
     pending.cards.forEach((c) => {
       if (chosen.indexOf(c.uid) >= 0) { side.hand.push(c); chosenCards.push(c); }
@@ -1232,6 +1292,7 @@
     if (side.classId === 'sanyueqi') v += 1;
     if (side.classId === 'pojiazhankuang') v -= 1;
     v += side.temp.armorBonus || 0;
+    if (side.temp.gamblerHalfCard) v = Math.floor(v / 2);
     return Math.max(0, v);
   }
 
@@ -1395,6 +1456,38 @@
 
   function resolveDeaths(state) {
     if (state.phase === 'gameover') return;
+    if (state.duo) {
+      const sides = state.duo.sides;
+      Object.keys(sides).forEach((id) => {
+        const side = sides[id];
+        if (side.hp > 0) return;
+        if (side.classId === 'dao' && side.hand.length >= 2) {
+          const sorted = side.hand.slice().sort((x, y) => x.value - y.value);
+          const discard = sorted.slice(0, 2);
+          side.hand = side.hand.filter((c) => !discard.some((d) => d.uid === c.uid));
+          side.discard.push.apply(side.discard, discard);
+          noteCaptainCards(state, side, discard.length);
+          side.hp = 1;
+          log(state, '⚔ ' + side.name + ' 发动【淬炼】，弃置手牌后复活至 1 点生命', 'ultimate', side.id);
+        }
+      });
+      const allyDead = state.duo.teams.player.every((id) => sides[id].hp <= 0);
+      const enemyDead = state.duo.teams.enemy.every((id) => sides[id].hp <= 0);
+      if (allyDead && enemyDead) {
+        state.winner = 'draw';
+        state.phase = 'gameover';
+        log(state, '双方队伍同时全灭，本局平局', 'system');
+      } else if (allyDead) {
+        state.winner = 'ai';
+        state.phase = 'gameover';
+        log(state, '我方队伍全员倒下，敌方获胜', 'system');
+      } else if (enemyDead) {
+        state.winner = 'player';
+        state.phase = 'gameover';
+        log(state, '敌方队伍全员倒下，我方获胜', 'system');
+      }
+      return;
+    }
     const p = state.player;
     const a = state.ai;
     SIDES.forEach((id) => {
@@ -1443,6 +1536,7 @@
     if (card.type === 'break' && !asNormal) {
       v = Math.floor(v * (side.temp.breakMultiplier || 1));
     }
+    if (side.temp.gamblerHalfCard) v = Math.floor(v / 2);
     return Math.max(0, v);
   }
 
@@ -1467,6 +1561,58 @@
     return packet;
   }
 
+  function applyGamblerHalf(state, side, foe, card) {
+    const half = Math.floor((card.value || 0) / 2);
+    if (half <= 0 || state.phase === 'gameover') return;
+    if (card.type === 'normal') {
+      applyCardDamage(state, side, foe, { normalTotal: half, hadDamageCards: true });
+      log(state, '【下注】额外以 1/2 数值结算：' + half + ' 点普通伤害', 'passive', side.id);
+    } else if (card.type === 'break') {
+      applyCardDamage(state, side, foe, { breakTotal: half, hadDamageCards: true });
+      log(state, '【下注】额外以 1/2 数值结算：' + half + ' 点破甲伤害', 'passive', side.id);
+    } else if (card.type === 'armor') {
+      addArmor(state, side, half, '下注');
+      log(state, '【下注】额外以 1/2 数值结算：获得 ' + half + ' 点护甲', 'passive', side.id);
+    } else if (card.type === 'rest') {
+      if (card.id === 'ningshen') {
+        drawCards(state, side, half);
+        log(state, '【下注】额外以 1/2 数值结算：摸 ' + half + ' 张牌', 'passive', side.id);
+      } else {
+        healSide(state, side, half, '下注');
+        log(state, '【下注】额外以 1/2 数值结算：回复 ' + half + ' 点生命', 'passive', side.id);
+      }
+    }
+  }
+
+  function placeGamble(state, sideId, guess) {
+    const side = state[sideId];
+    if (!side) return { ok: false, error: '无效角色' };
+    if (side.classId !== 'dutu') return { ok: false, error: '职业不符' };
+    if (state.phase !== 'play' || state.active !== sideId) return { ok: false, error: '当前不能下注' };
+    if (side.temp.gamblerBet) return { ok: false, error: '上一张牌的下注尚未结算' };
+    if (!side.deck.length) return { ok: false, error: '牌库为空，无法下注' };
+    const top = side.deck[0];
+    const correct = top.type === guess;
+    side.temp.gamblerBet = { guess, correct, top: { uid: top.uid, id: top.id, name: top.name, type: top.type, value: top.value, img: top.img } };
+    // 猜中或猜错，被猜测的牌库顶卡都进入弃牌堆。
+    side.deck.shift();
+    side.discard.push(top);
+    if (correct) {
+      log(state, side.name + ' 【下注】猜中「' + top.name + '」（' + top.type + '），此牌进入弃牌堆', 'passive', side.id);
+    } else {
+      log(state, side.name + ' 【下注】猜「' + guess + '」，牌库顶实际是「' + top.name + '」，猜错，此牌进入弃牌堆', 'passive', side.id);
+    }
+    return { ok: true, correct, guess, top: side.temp.gamblerBet.top };
+  }
+
+  function skipGamble(state, sideId) {
+    const side = state[sideId];
+    if (!side || side.classId !== 'dutu') return { ok: false, error: '职业不符' };
+    side.temp.gamblerBet = null;
+    log(state, side.name + ' 本张牌不下注', 'passive', side.id);
+    return { ok: true };
+  }
+
   function playCard(state, sideId, uid, opts) {
     opts = opts || {};
     if (state.phase !== 'play') return { ok: false, error: '当前不是出牌阶段' };
@@ -1482,10 +1628,21 @@
     const modes = cardModeOptions(state, side, card);
     let choice = opts.choice || side.choices[uid] || (modes.length ? modes[0].id : null);
     if (modes.length && !modes.some((m) => m.id === choice)) choice = modes[0].id;
+    const bless = !!(side.classId === 'saint' && choice === 'bless' && (card.type === 'armor' || card.type === 'rest'));
+    const effectTarget = bless ? foe : side;
+    if (bless) {
+      side.long.saintPunishTurn = state.turn + 1;
+      side.long.saintPunishUsed = false;
+      log(state, side.name + ' 发动【赐福】，将「' + card.name + '」对 ' + foe.name + ' 使用；下回合对方伤害你时触发【圣诫】', 'passive', side.id);
+    }
     const startLog = state.log.length;
+    const gambleBet = side.temp.gamblerBet;
+    const gambleWrong = !!(gambleBet && !gambleBet.correct);
+    if (gambleBet) side.temp.gamblerBet = null;
+    side.temp.gamblerHalfCard = gambleWrong;
 
     // 玫瑰老师【延授】：本回合只出 1 张，效果延迟到下回合结束阶段。
-    if (side.classId === 'rose' && !state.resolvingDelayed) {
+    if (side.classId === 'rose' && side.temp.delayActive && !state.resolvingDelayed) {
       side.hand = side.hand.filter((c) => c.uid !== uid);
       side.temp.playedCount = (side.temp.playedCount || 0) + 1;
       delete side.choices[uid];
@@ -1517,10 +1674,14 @@
 
     const summary = { damage: 0, heal: 0, armor: 0, draws: 0, notes: [] };
 
+    if (gambleWrong) {
+      log(state, '【下注】猜错，本张牌效果量减半（向下取整）', 'passive', side.id);
+      summary.notes.push('下注猜错：本张牌效果减半');
+    }
     if (card.type === 'armor') {
       const val = computeArmorValue(side, card);
-      side.temp.armorValues.push(val);
-      addArmor(state, side, val, card.name);
+      if (!bless) side.temp.armorValues.push(val);
+      addArmor(state, effectTarget, val, card.name + (bless ? '·赐福' : ''));
       summary.armor = val;
     } else if (card.type === 'break') {
       const asNormal = side.status.breakAsNormalTurn > 0 && side.status.breakAsNormalTurn === side.turnsTaken;
@@ -1583,28 +1744,34 @@
             };
           }
         } else {
-          const n = 2 + (side.classId === 'chensiyu' ? 1 : 0) + (card.delayedBoost || 0);
-          drawCards(state, side, n);
+          const rawN = 2 + (side.classId === 'chensiyu' ? 1 : 0) + (card.delayedBoost || 0);
+          const n = side.temp.gamblerHalfCard ? Math.max(0, Math.floor(rawN / 2)) : rawN;
+          drawCards(state, effectTarget, n);
           summary.draws = n;
           if (side.classId === 'chensiyu') log(state, '【别吵，我在烧烤】凝神额外摸 1 张牌', 'passive', side.id);
           if (side.classId === 'chensiyu' && side.long.chensiyuNingshenTurn === state.turn) {
             side.temp.playLimitBonus += 1;
-            side.long.chensiyuNingshenTurn = -1;
             log(state, side.name + ' 因必杀效果，本回合额外获得 1 次出牌机会', 'passive', side.id);
           }
         }
       } else if (choice === 'curse' && side.classId === 'dunai') {
-        log(state, side.name + ' 的【腐乳】将「奶」化为毒：对 ' + foe.name + ' 造成 ' + card.value + ' 点真实伤害，并封锁回血', 'passive', side.id);
-        summary.damage = card.value;
-        directDamage(state, side, foe, card.value, { label: '腐乳', noReflect: false });
+        const curseDmg = side.temp.gamblerHalfCard ? Math.floor(card.value / 2) : card.value;
+        log(state, side.name + ' 的【腐乳】将「奶」化为毒：对 ' + foe.name + ' 造成 ' + curseDmg + ' 点真实伤害，并封锁回血', 'passive', side.id);
+        summary.damage = curseDmg;
+        directDamage(state, side, foe, curseDmg, { label: '腐乳', noReflect: false });
         foe.status.healLockUntilTurn = foe.turnsTaken + 2;
       } else {
-        const healAmount = card.value + (side.temp.healBonus || 0);
-        healSide(state, side, healAmount, card.name);
+        let healAmount = card.value + (side.temp.healBonus || 0);
+        if (side.temp.gamblerHalfCard) healAmount = Math.floor(healAmount / 2);
+        healSide(state, effectTarget, healAmount, card.name);
         summary.heal = healAmount;
       }
     }
 
+    if (gambleBet && gambleBet.correct && state.phase !== 'gameover') {
+      applyGamblerHalf(state, side, foe, card);
+    }
+    side.temp.gamblerHalfCard = false;
     resolveDeaths(state);
     state.playSeq += 1;
     state.lastPlay = {
@@ -1617,6 +1784,16 @@
     };
     if (state.phase === 'gameover' && !state.lastResult) finishResult(state);
     return { ok: true, play: state.lastPlay, gameover: state.phase === 'gameover' };
+  }
+
+  function setRoseDelay(state, sideId, active) {
+    const side = state[sideId];
+    if (!side || side.classId !== 'rose') return { ok: false, error: '职业不符' };
+    if (state.phase !== 'play' || state.active !== sideId) return { ok: false, error: '当前不是出牌阶段' };
+    if (active && side.long.delayedCard) return { ok: false, error: '已有延授牌，不能再次发动' };
+    side.temp.delayActive = !!active;
+    log(state, side.name + (active ? ' 发动【延授】：本回合只能打出 1 张牌，效果延迟到下回合' : ' 不发动【延授】：本回合正常打出 2 张牌'), 'passive', side.id);
+    return { ok: true, active: !!active };
   }
 
   function resolveDelayed(state, sideId, activate) {
@@ -1802,6 +1979,9 @@
     useDivine,
     resolveKuaishou,
     resolveDelayed,
+    setRoseDelay,
+    placeGamble,
+    skipGamble,
     getUltimateCost,
     commitTurn,
     playCard,
