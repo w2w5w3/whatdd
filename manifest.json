@@ -5,7 +5,7 @@
   "lang": "zh-CN",
   "start_url": "./index.html",
   "display": "standalone",
-  "orientation": "portrait",
+  "orientation": "landscape",
   "background_color": "#080a0f",
   "theme_color": "#0d1016",
   "icons": [

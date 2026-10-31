@@ -14,85 +14,135 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="我的刀盾" />
-  <link rel="stylesheet" href="css/style.css?v=1.5.1" />
+  <link rel="stylesheet" href="css/style.css?v=1.21.1" />
 </head>
 <body>
   <div id="app">
-    <!-- ================= 首页 ================= -->
-    <section id="screen-home" class="screen home-screen">
-      <div class="home-bg" aria-hidden="true">
-        <div class="home-orb orb-a"></div>
-        <div class="home-orb orb-b"></div>
-        <div class="home-grid"></div>
+    <!-- ================= 大厅 ================= -->
+    <section id="screen-home" class="screen hub-screen">
+      <div class="hub-bg" aria-hidden="true">
+        <div class="hub-orb orb-a"></div>
+        <div class="hub-orb orb-b"></div>
+        <div class="hub-grid"></div>
       </div>
-      <header class="home-top">
+      <header class="hub-top">
         <div class="brand-mini">
           <span class="brand-glyph">刃</span>
           <span class="brand-mini-text">刀盾 <i>DOUBLE EDGE</i></span>
         </div>
         <div class="home-top-actions">
           <button class="ghost-btn" id="btn-sound" type="button" title="音效开关">🔊 <span>音效</span></button>
-          <button class="ghost-btn" id="btn-tutorial" type="button">🎓 <span>新手教程</span></button>
           <button class="ghost-btn" id="btn-rules-home" type="button">📜 <span>完整规则</span></button>
         </div>
       </header>
 
-      <div class="home-main">
-        <section class="hero">
-          <div class="hero-kicker"><span></span> 双生刀盾 · 回合制对战 · 一决生死 <span></span></div>
-          <h1 class="hero-title">
-            <span class="title-line">我的刀盾</span>
-            <span class="title-sub">修正版<em>REVISED</em></span>
-          </h1>
-          <p class="hero-lead">30 张固定牌库，23 位个性职业。<br />双方轮流行动，用破甲、叠盾与斩杀线赢下对决。</p>
+      <main class="hub-main">
+        <div class="hub-title-block">
+          <p class="hub-kicker">双生刀盾 · 回合制对战 · 一决生死</p>
+          <h1 class="hub-title">我的刀盾</h1>
+          <p class="hub-sub">修正版 <em>REVISED</em></p>
+          <p class="hub-desc">30 张固定牌库 · 25 位个性职业</p>
+        </div>
 
-          <div class="hero-actions">
-            <button class="primary-btn hero-start" id="btn-start" type="button">
-              <span class="btn-shine"></span>
-              <span>开始对局</span>
-              <small>VS 电脑</small>
-            </button>
-            <button class="secondary-btn" id="btn-random-class" type="button">🎲 随机职业</button>
-            <button class="secondary-btn lan-btn" id="btn-lan" type="button">🌐 局域网联机</button>
-            <button class="ghost-btn hero-jump" id="btn-jump-classes" type="button">浏览全部职业 ↓</button>
-          </div>
+        <nav class="hub-actions" aria-label="大厅菜单">
+          <button class="hub-btn hub-btn-primary" id="btn-start" type="button">
+            <b>开始游戏</b><small>1v1 · VS 电脑</small>
+          </button>
+          <button class="hub-btn hub-btn-duo" id="btn-duo" type="button">
+            <b>2v2 对战</b><small>你 + AI 队友 VS 两名 AI</small>
+          </button>
+          <button class="hub-btn" id="btn-tutorial" type="button">
+            <b>新手教程</b><small>四类卡牌演示</small>
+          </button>
+          <button class="hub-btn" id="btn-library" type="button">
+            <b>卡牌库</b><small>角色库 · 卡牌库</small>
+          </button>
+          <button class="hub-btn" id="btn-lan" type="button">
+            <b>局域网联机</b><small>同一 Wi-Fi 双人对战</small>
+          </button>
+        </nav>
 
-          <div class="hero-meta">
-            <div><b>23</b><span>可选职业</span></div>
-            <div><b>30</b><span>固定牌库</span></div>
-            <div><b>2</b><span>每回合出牌</span></div>
-            <div><b>∞</b><span>重开对局</span></div>
-          </div>
-
-          <div class="selected-preview" id="selected-preview"><!-- filled by JS --></div>
-        </section>
-
-        <section class="picker-panel">
-          <div class="picker-head">
-            <div>
-              <div class="panel-kicker">CHOOSE YOUR EDGE</div>
-              <h2>选择你的职业</h2>
-            </div>
-            <div class="picker-count"><span id="class-count">23</span> / 23</div>
-          </div>
-          <div class="class-grid" id="class-grid"><!-- filled by JS --></div>
-          <p class="picker-tip">点击职业查看被动与必杀 · 整局不可更换</p>
-        </section>
-      </div>
+        <p class="hub-hint">进入卡牌库以更换角色</p>
+        <div class="hub-current" id="hub-current"><!-- filled by JS --></div>
+      </main>
 
       <footer class="home-footer">
         <span>同人二创 · 非商业用途</span>
         <span class="dot">·</span>
         <span>支持手机 / 平板 / 电脑</span>
         <span class="dot">·</span>
-        <span>v1.5.1</span>
+        <span>v1.21.1</span>
         <span class="dot">·</span>
         <span id="ultimate-state">必杀：启用</span>
       </footer>
     </section>
 
+    <!-- ================= 角色库 / 卡牌库 ================= -->
+    <section id="screen-library" class="screen library-screen hidden">
+      <header class="library-top">
+        <button class="ghost-btn library-back" id="btn-library-back" type="button">← 返回大厅</button>
+        <div class="library-heading">
+          <span class="panel-kicker">CHARACTERS &amp; CARDS</span>
+          <h2>角色库 <em>·</em> 卡牌库</h2>
+        </div>
+        <div class="library-count"><span id="class-count">25</span> / 25 职业</div>
+      </header>
+
+      <main class="library-main">
+        <section class="library-panel library-classes">
+          <div class="library-panel-head"><span>角色库</span><small>点击选择角色</small></div>
+          <div class="class-grid" id="class-grid"><!-- filled by JS --></div>
+        </section>
+        <section class="library-panel library-cards">
+          <div class="library-panel-head"><span>卡牌库</span><small>本局共 30 张</small></div>
+          <div class="library-card-list" id="library-card-list"><!-- filled by JS --></div>
+        </section>
+      </main>
+
+      <footer class="library-bottom">
+        <div class="library-selected" id="library-selected"><!-- filled by JS --></div>
+        <button class="hub-btn hub-btn-primary library-start" id="btn-library-start" type="button"><b>开始游戏</b><small>使用当前角色</small></button>
+      </footer>
+    </section>
+
+
+    <!-- ================= 2v2 对战 ================= -->
+    <section id="screen-duo" class="screen duo-screen hidden">
+      <header class="duo-topbar">
+        <div class="game-brand">
+          <span class="brand-glyph small">刃</span>
+          <div><b>2v2 对战</b><small>队友协作 · 击破敌方双人</small></div>
+        </div>
+        <div class="duo-round">
+          <span>ROUND <b id="duo-round">1</b></span>
+          <span class="phase-pill" id="duo-phase">准备阶段</span>
+        </div>
+        <div class="game-top-actions">
+          <button class="icon-btn" id="btn-duo-rules" type="button" title="规则">❔</button>
+          <button class="icon-btn" id="btn-duo-sound" type="button" title="音效">🔊</button>
+          <button class="icon-btn danger" id="btn-duo-exit" type="button" title="退出">✕</button>
+        </div>
+      </header>
+      <main class="duo-main">
+        <div class="duo-team-label duo-team-label-enemy">敌方队伍</div>
+        <div class="duo-fighters" id="duo-fighters"><!-- filled by JS --></div>
+        <div class="duo-team-label duo-team-label-ally">我方队伍</div>
+        <div class="duo-turn-line" id="duo-turn-line"><!-- filled by JS --></div>
+        <div class="duo-target-hint" id="duo-target-hint"><!-- filled by JS --></div>
+      </main>
+      <section class="duo-hand-dock">
+        <div class="duo-hand-head"><span>手牌</span><small id="duo-hand-info"></small></div>
+        <div class="duo-hand" id="duo-hand"><!-- filled by JS --></div>
+      </section>
+      <footer class="duo-command">
+        <div class="duo-status" id="duo-status">你的回合</div>
+        <button class="ghost-btn duo-ult-btn" id="btn-duo-ult" type="button">必杀</button>
+        <button class="commit-btn" id="btn-duo-end" type="button"><b>结束回合</b><small id="duo-end-sub">等待行动</small></button>
+      </footer>
+    </section>
+
     <!-- ================= 对局 ================= -->
-    <section id="screen-game" class="screen game-screen hidden">
+    <section id="screen-game" class="screen game-screen battle-v2 hidden">
       <header class="game-topbar">
         <div class="game-brand">
           <span class="brand-glyph small">刃</span>
@@ -113,11 +163,23 @@
       </header>
 
       <main class="arena">
+        <div class="enemy-hand-row" id="enemy-hand-row"></div>
+        <div class="played-zone" id="played-zone">
+          <div id="played-zone-card"></div>
+        </div>
+        <button class="mid-end-btn" id="btn-round-end" type="button">回合结束</button>
+        <button class="surrender-mini" id="btn-surrender-mini" type="button" title="投降" aria-label="投降">🏳</button>
         <!-- 对手 -->
         <section class="fighter fighter-ai" id="fighter-ai">
           <div class="shield-aura hidden" id="ai-shield-aura"></div>
-          <div class="fighter-art" id="ai-art"></div>
-          <div class="fighter-info">
+          <div class="character-card character-card-enemy">
+            <span class="char-hp-orb"><b id="ai-hp-orb">20</b></span>
+            <img id="ai-card-img" src="" alt="" />
+            <div class="char-shield" id="ai-char-shield"><div class="shield-shards"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+            <div class="shield-badge" id="ai-shield-badge"><span class="sb-icon">🛡</span><b id="ai-shield-count">0</b></div>
+          </div>
+          <div class="fighter-art enemy-avatar" id="ai-art"></div>
+          <div class="fighter-info legacy-info">
             <div class="fighter-heading">
               <div class="fighter-name-wrap">
                 <span class="fighter-side">对手</span>
@@ -175,8 +237,19 @@
         <!-- 玩家 -->
         <section class="fighter fighter-player" id="fighter-player">
           <div class="shield-aura hidden" id="player-shield-aura"></div>
-          <div class="fighter-art" id="player-art"></div>
-          <div class="fighter-info">
+          <div class="fighter-art player-avatar" id="player-art"></div>
+          <div class="character-card character-card-player">
+            <span class="char-hp-orb"><b id="player-hp-orb">20</b></span>
+            <img id="player-card-img" src="" alt="" />
+            <div class="char-shield" id="player-char-shield"><div class="shield-shards"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+            <div class="shield-badge" id="player-shield-badge"><span class="sb-icon">🛡</span><b id="player-shield-count">0</b></div>
+          </div>
+          <div class="skill-dock">
+            <button class="skill-circle" id="btn-skill-active" type="button"><span>主动</span><b>技</b></button>
+            <button class="skill-circle ultimate" id="btn-skill-ultimate" type="button"><span>必杀</span><b>技</b></button>
+            <div class="ability-bar" id="ability-bar" aria-hidden="true"></div>
+          </div>
+          <div class="fighter-info legacy-info">
             <div class="fighter-heading">
               <div class="fighter-name-wrap">
                 <span class="fighter-side me">你</span>
@@ -219,7 +292,6 @@
 
       <!-- 操作栏 -->
       <section class="command-dock">
-        <div class="ability-bar" id="ability-bar"></div>
         <div class="command-main">
           <button class="ghost-action" id="btn-clear-select" type="button">关闭详情</button>
           <button class="commit-btn" id="btn-commit" type="button">
@@ -228,9 +300,19 @@
           </button>
         </div>
       </section>
+      <div class="corner-actions" id="corner-actions">
+        <button class="corner-btn" id="btn-char-passive" type="button">常驻被动</button>
+        <button class="corner-btn" id="btn-char-ultimate" type="button">必杀技</button>
+      </div>
+      <div class="battle-mini-controls" id="battle-mini-controls">
+        <button class="mini-ctl" id="btn-mini-active" type="button" title="主动技能" aria-label="主动技能">✦</button>
+        <button class="mini-ctl" id="btn-mini-ultimate" type="button" title="必杀技" aria-label="必杀技">✧</button>
+        <button class="mini-ctl" id="btn-mini-end" type="button" title="结束回合" aria-label="结束回合">⏭</button>
+      </div>
     </section>
   </div>
 
+  <div id="attack-fx-layer" class="attack-fx-layer" aria-hidden="true"></div>
   <div id="card-inspector" class="card-inspector hidden" aria-live="polite"></div>
   <div id="play-reveal" class="play-reveal hidden" aria-live="polite"></div>
   <div id="draw-anim" class="draw-anim" aria-hidden="true"></div>
@@ -238,11 +320,11 @@
   <div id="modal-root" class="modal-root" aria-live="polite"></div>
   <div id="toast-root" class="toast-root"></div>
 
-  <script src="js/config.js?v=1.5.1"></script>
-  <script src="js/engine.js?v=1.5.1"></script>
-  <script src="js/ai.js?v=1.5.1"></script>
-  <script src="js/lan.js?v=1.5.1"></script>
-  <script src="js/ui.js?v=1.5.1"></script>
-  <script src="js/main.js?v=1.5.1"></script>
+  <script src="js/config.js?v=1.21.1"></script>
+  <script src="js/engine.js?v=1.21.1"></script>
+  <script src="js/ai.js?v=1.21.1"></script>
+  <script src="js/lan.js?v=1.21.1"></script>
+  <script src="js/ui.js?v=1.21.1"></script>
+  <script src="js/main.js?v=1.21.1"></script>
 </body>
 </html>
