@@ -33,6 +33,9 @@
     tutorialStep: 0,
     tutorialCardPlayed: false,
     hostSendQueue: Promise.resolve(),
+    duo: null,
+    duoLastClick: { uid: null, at: 0 },
+    duoAiTimer: null,
     guestSendQueue: Promise.resolve(),
     // 实时出牌 / 隐藏必杀开关
     inspectUid: null,
@@ -47,17 +50,28 @@
   } catch (e) { /* private mode */ }
   UI.ultimatesEnabled = app.ultimatesEnabled;
   app.selectedClass = C.CLASS_LIST[app.selectedClass].id;
+  try {
+    const savedClass = localStorage.getItem('dd_class');
+    if (savedClass && C.CLASSES[savedClass]) app.selectedClass = savedClass;
+  } catch (e) { /* private mode */ }
 
   /* ---------------- 页面切换 ---------------- */
   function showScreen(name) {
     app.screen = name;
     $('#screen-home').classList.toggle('hidden', name !== 'home');
     $('#screen-game').classList.toggle('hidden', name !== 'game');
-    if (name === 'home') window.scrollTo({ top: 0, behavior: 'smooth' });
+    const lib = $('#screen-library');
+    if (lib) lib.classList.toggle('hidden', name !== 'library');
+    const duo = $('#screen-duo');
+    if (duo) duo.classList.toggle('hidden', name !== 'duo');
+    if (name === 'home' || name === 'library') window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
   function showHome() {
     stopLan();
+    if (app.duoAiTimer) { clearTimeout(app.duoAiTimer); app.duoAiTimer = null; }
+    app.duo = null;
+    app.mode = 'solo';
     UI.closeModal();
     UI.hideInspector();
     app.mode = 'solo';
@@ -66,6 +80,13 @@
     showScreen('home');
     applyUltimateSetting(true);
     UI.renderHome(app.selectedClass);
+    UI.setSoundUI();
+  }
+
+  function showLibrary() {
+    UI.closeModal();
+    showScreen('library');
+    UI.renderLibrary(app.selectedClass);
     UI.setSoundUI();
   }
 
@@ -201,6 +222,23 @@
     if (state.phase === 'gameover') { setTimeout(showEnd, 700); return; }
     const line = $('#turn-toast-line');
     if (line) line.textContent = '第 ' + state.round + ' 回合 · 你的回合 · 单击查看 / 双击出牌';
+    if (state.phase === 'play' && state.player.classId === 'rose' && !state.player.long.delayedCard) {
+      setTimeout(() => {
+        if (!app.game || app.game !== state || state.phase !== 'play' || state.active !== 'player') return;
+        UI.showRoseDelayPrompt(
+          () => {
+            E.setRoseDelay(state, 'player', true);
+            renderGame(false);
+            UI.toast('已发动延授：本回合只能打出 1 张牌', 'success');
+          },
+          () => {
+            E.setRoseDelay(state, 'player', false);
+            renderGame(false);
+            UI.toast('未发动延授：本回合正常出牌', 'success');
+          }
+        );
+      }, 320);
+    }
   }
 
   function startGuestTurn() {
@@ -381,8 +419,10 @@
     playHandCard(uid, modes.length ? modes[0].id : null);
   }
 
-  function playHandCard(uid, choice) {
+  function playHandCard(uid, choice, opts) {
+    opts = opts || {};
     const state = app.game;
+    if (state) UI.hpSnapshot = { player: state.player.hp, ai: state.ai.hp };
     if (!state) return;
     const card = state.player.hand.find((c) => c.uid === uid);
     if (!card) return;
@@ -405,6 +445,30 @@
       app.tutorialCardPlayed = true;
       renderGame(true);
       setTimeout(tutorialAfterCard, 950);
+      return;
+    }
+    if (state.player.classId === 'dutu' && app.mode !== 'lan-guest' && !opts.skipGamble && state.player.deck.length) {
+      if (state.player.temp.gamblerBet) E.skipGamble(state, 'player');
+      UI.showTypeChoice({
+        title: '下注 · 猜测牌库顶类型',
+        subtitle: '猜中：此卡额外 1/2 结算；猜错：此卡效果减半',
+        onPick(type) {
+          const gr = E.placeGamble(state, 'player', type);
+          if (!gr.ok) {
+            UI.toast(gr.error, 'error');
+            E.skipGamble(state, 'player');
+            playHandCard(uid, choice, { skipGamble: true });
+            return;
+          }
+          renderGame(false);
+          UI.showGambleReveal(gr, () => playHandCard(uid, choice, { skipGamble: true }));
+        },
+        onCancel() {
+          E.skipGamble(state, 'player');
+          renderGame(false);
+          playHandCard(uid, choice, { skipGamble: true });
+        },
+      });
       return;
     }
     const r = E.playCard(state, 'player', uid, { choice });
@@ -598,9 +662,9 @@
       const pending = state.pendingKuaishou;
       UI.showMultiCardPicker({
         title: '神偷 · 对方牌库顶端三张',
-        subtitle: '宣言「' + (pending.declared ? (C.TYPE_META[pending.declared] || {}).label || pending.declared : '') + '」 · 选择 0~' + (pending.maxPick == null ? 2 : pending.maxPick) + ' 张；其余加入对方手牌',
+        subtitle: '宣言「' + (pending.declared ? (C.TYPE_META[pending.declared] || {}).label || pending.declared : '') + '」 · 需选择 ' + (pending.minPick == null ? (pending.maxPick == null ? 2 : pending.maxPick) : pending.minPick) + ' 张；其余加入对方手牌',
         cards: pending.cards.slice(),
-        min: 0,
+        min: pending.minPick == null ? (pending.maxPick == null ? 2 : pending.maxPick) : pending.minPick,
         max: pending.maxPick == null ? 2 : pending.maxPick,
         confirmLabel: '确认选择',
         onConfirm(uids) {
@@ -843,6 +907,441 @@
     showScreen('game');
     renderGame(false);
     applyTutorialStep(0);
+  }
+
+  /* ---------------- 2v2 对战 ---------------- */
+  const DUO_ORDER = ['p1', 'e1', 'p2', 'e2'];
+
+  function randomDuoClass(exclude) {
+    const pool = C.CLASS_LIST.filter((c) => exclude.indexOf(c.id) < 0);
+    return pool[Math.floor(Math.random() * pool.length)] || C.CLASS_LIST[0];
+  }
+
+  function makeDuoSide(classId, id, isAI) {
+    const tmp = E.createGame({
+      playerClass: classId,
+      aiClass: 'fanren',
+      seed: Math.floor(Math.random() * 100000) + 1,
+    });
+    if (tmp.setupNeeded.indexOf('poison') >= 0) {
+      const cats = ['normal', 'break', 'rest', 'armor'];
+      E.chooseSetup(tmp, 'poison', cats[Math.floor(Math.random() * cats.length)]);
+    }
+    if (tmp.setupNeeded.indexOf('wolf') >= 0) E.chooseSetup(tmp, 'wolf', Math.random() < 0.5 ? 'A' : 'B');
+    const started = E.startGame(tmp);
+    if (!started.ok) throw new Error(started.error || '创建角色失败');
+    const side = tmp.player;
+    side.id = id;
+    side.isAI = !!isAI;
+    side.turnsTaken = 0;
+    return side;
+  }
+
+  function duoLiving(id) {
+    const side = app.duo && app.duo.duo.sides[id];
+    return !!side && side.hp > 0;
+  }
+
+  function duoTeamOf(id) {
+    return id === 'p1' || id === 'p2' ? 'player' : 'enemy';
+  }
+
+  function duoOpponents(id) {
+    return duoTeamOf(id) === 'player' ? ['e1', 'e2'] : ['p1', 'p2'];
+  }
+
+  function chooseDuoTarget(actorId, preferred) {
+    const foes = duoOpponents(actorId);
+    if (preferred && foes.indexOf(preferred) >= 0 && duoLiving(preferred)) return preferred;
+    const living = foes.filter((id) => duoLiving(id));
+    if (!living.length) return null;
+    if (actorId === 'p1' || actorId === 'p2') return living[0];
+    // AI 优先攻击当前生命最低的我方角色
+    return living.sort((a, b) => app.duo.duo.sides[a].hp - app.duo.duo.sides[b].hp)[0];
+  }
+
+  function setDuoAliases(actorId, targetId) {
+    const st = app.duo;
+    const actor = st.duo.sides[actorId];
+    const target = st.duo.sides[targetId];
+    st.duo.activeId = actorId;
+    st.duo.targetId = targetId;
+    if (actorId === 'p1') {
+      st.player = actor;
+      st.ai = target;
+    } else {
+      st.ai = actor;
+      st.player = target;
+    }
+  }
+
+  function startDuoTurn(actorId) {
+    const st = app.duo;
+    if (!st || st.phase === 'gameover') return;
+    const actor = st.duo.sides[actorId];
+    if (!actor || actor.hp <= 0) { advanceDuoTurn(actorId); return; }
+    const targetId = chooseDuoTarget(actorId, st.duo.targetId);
+    if (!targetId) { showDuoEnd(); return; }
+    setDuoAliases(actorId, targetId);
+    actor.selection = [];
+    actor.choices = {};
+    const br = E.beginTurn(st, actorId);
+    if (!br.ok) { UI.toast(br.error, 'error'); return; }
+    const dr = E.startDraw(st);
+    if (!dr.ok) { UI.toast(dr.error, 'error'); return; }
+    st.duo.activeId = actorId;
+    renderDuo();
+    if (actorId === 'p1' && st.phase === 'play' && actor.classId === 'rose' && !actor.long.delayedCard) {
+      setTimeout(() => {
+        if (app.duo !== st || st.duo.activeId !== 'p1' || st.phase !== 'play') return;
+        UI.showRoseDelayPrompt(
+          () => { E.setRoseDelay(st, 'p1', true); renderDuo(); UI.toast('已发动延授：本回合只能打出 1 张牌', 'success'); },
+          () => { E.setRoseDelay(st, 'p1', false); renderDuo(); UI.toast('未发动延授：本回合正常出牌', 'success'); }
+        );
+      }, 320);
+    }
+    if (actorId !== 'p1') {
+      app.duoAiTimer = setTimeout(() => duoAiTurn(actorId), 650);
+    }
+  }
+
+  function advanceDuoTurn(fromId) {
+    const st = app.duo;
+    if (!st || st.phase === 'gameover') { showDuoEnd(); return; }
+    const idx = DUO_ORDER.indexOf(fromId);
+    for (let step = 1; step <= DUO_ORDER.length; step += 1) {
+      const nextIdx = (idx + step) % DUO_ORDER.length;
+      const id = DUO_ORDER[nextIdx];
+      if (duoLiving(id)) {
+        if (nextIdx <= idx) st.round += 1;
+        startDuoTurn(id);
+        return;
+      }
+    }
+    showDuoEnd();
+  }
+
+  function duoAiTurn(actorId) {
+    const st = app.duo;
+    if (!st || st.duo.activeId !== actorId || st.phase !== 'play') return;
+    AI.beforeCards(st);
+    if (st.phase === 'gameover') { renderDuo(); showDuoEnd(); return; }
+    const limit = E.getPlayLimit(st, actorId);
+    let guard = 0;
+    while (st.phase === 'play' && guard++ < 8) {
+      const actor = st.duo.sides[actorId];
+      if ((actor.temp.playedCount || 0) >= limit) break;
+      const pick = AI.chooseOne(st);
+      if (!pick) break;
+      const r = E.playCard(st, actorId, pick.uid, { choice: pick.choice });
+      if (!r.ok || st.phase === 'gameover') break;
+      if (st.duo.sides[st.duo.targetId].hp <= 0) {
+        const nextTarget = chooseDuoTarget(actorId, null);
+        if (!nextTarget) break;
+        setDuoAliases(actorId, nextTarget);
+      }
+    }
+    renderDuo();
+    if (st.phase === 'gameover') { setTimeout(showDuoEnd, 500); return; }
+    const r = E.endTurn(st);
+    if (!r.ok) { UI.toast(r.error, 'error'); return; }
+    renderDuo();
+    if (st.phase === 'gameover') { setTimeout(showDuoEnd, 500); return; }
+    app.duoAiTimer = setTimeout(() => advanceDuoTurn(actorId), 420);
+  }
+
+  function duoSelectTarget(sideId) {
+    const st = app.duo;
+    if (!st || st.duo.activeId !== 'p1' || st.phase !== 'play') return;
+    if (duoTeamOf(sideId) !== 'enemy' || !duoLiving(sideId)) return;
+    setDuoAliases('p1', sideId);
+    renderDuo();
+    UI.Sound.play('click');
+  }
+
+  function duoPlayCard(uid) {
+    const st = app.duo;
+    if (!st || st.duo.activeId !== 'p1' || st.phase !== 'play') return;
+    const p1 = st.duo.sides.p1;
+    const card = p1.hand.find((c) => c.uid === uid);
+    if (!card) return;
+    if (p1.classId === 'dutu' && !p1.temp.gamblerBet && p1.deck.length > 0) {
+      UI.showTypeChoice({
+        title: '下注 · 猜测牌库顶类型',
+        subtitle: '猜中此卡额外 1/2 结算；猜错此卡效果减半',
+        onPick(type) {
+          const gr = E.placeGamble(st, 'p1', type);
+          if (!gr.ok) { UI.toast(gr.error, 'error'); doDuoPlay(uid, null); return; }
+          renderDuo();
+          UI.showGambleReveal(gr, () => doDuoPlay(uid, null));
+        },
+        onCancel() {
+          E.skipGamble(st, 'p1');
+          doDuoPlay(uid, null);
+        },
+      });
+      return;
+    }
+    const modes = E.cardModeOptions(st, p1, card);
+    if (modes.length > 1) {
+      UI.showModal({
+        title: '选择结算方式 · ' + card.name,
+        subtitle: '赐福 / 职业被动',
+        narrow: true,
+        body: `<div class="prep-actions">${modes.map((m) => `<button type="button" class="prep-action" data-duo-mode="${m.id}"><b>${esc(m.label)}</b></button>`).join('')}</div>`,
+        footer: [{ label: '取消', onClick: () => UI.closeModal() }],
+        onMount(root) {
+          root.querySelectorAll('[data-duo-mode]').forEach((btn) => btn.addEventListener('click', () => {
+            UI.closeModal();
+            doDuoPlay(uid, btn.dataset.duoMode);
+          }));
+        },
+      });
+      return;
+    }
+    doDuoPlay(uid, modes.length ? modes[0].id : null);
+  }
+
+  function doDuoPlay(uid, choice) {
+    const st = app.duo;
+    if (!st || st.duo.activeId !== 'p1' || st.phase !== 'play') return;
+    const r = E.playCard(st, 'p1', uid, { choice });
+    if (!r.ok) { UI.toast(r.error, 'error'); return; }
+    UI.Sound.play('play');
+    if (st.duo.sides[st.duo.targetId].hp <= 0) {
+      const next = chooseDuoTarget('p1', null);
+      if (next) setDuoAliases('p1', next);
+    }
+    UI.hideInspector();
+    renderDuo();
+    if (st.phase === 'gameover') { setTimeout(showDuoEnd, 600); return; }
+  }
+
+  function duoUseUltimate() {
+    const st = app.duo;
+    if (!st || st.duo.activeId !== 'p1' || st.phase !== 'play') return;
+    const can = E.canUseUltimate(st, 'p1');
+    if (!can.ok) { UI.toast(can.reason, 'error'); return; }
+    const cost = E.getUltimateCost(st, 'p1');
+    const use = (discardUids) => {
+      const r = E.useUltimate(st, 'p1', { discardUids });
+      if (!r.ok) { UI.toast(r.error, 'error'); return; }
+      if (st.duo.sides[st.duo.targetId].hp <= 0) {
+        const next = chooseDuoTarget('p1', null);
+        if (next) setDuoAliases('p1', next);
+      }
+      UI.hideInspector();
+      renderDuo();
+      if (st.phase === 'gameover') { setTimeout(showDuoEnd, 600); return; }
+    };
+    if (cost.discard > 0) {
+      UI.showMultiCardPicker({
+        title: '必杀代价 · 选择弃置的手牌',
+        subtitle: '需弃置 ' + cost.discard + ' 张',
+        cards: st.duo.sides.p1.hand.slice(),
+        min: cost.discard,
+        max: cost.discard,
+        confirmLabel: '弃置并发动',
+        onConfirm: use,
+        onCancel: () => UI.closeModal(),
+      });
+      return;
+    }
+    use([]);
+  }
+
+  function duoEndTurn() {
+    const st = app.duo;
+    if (!st || st.duo.activeId !== 'p1' || st.phase !== 'play') return;
+    const p1 = st.duo.sides.p1;
+    if (p1.long.delayedCard && p1.long.delayedCard.delayedAtTurn < p1.turnsTaken) {
+      UI.showDelayedPrompt(
+        p1.long.delayedCard,
+        () => {
+          E.resolveDelayed(st, 'p1', true);
+          if (st.duo.sides[st.duo.targetId].hp <= 0) {
+            const next = chooseDuoTarget('p1', null);
+            if (next) setDuoAliases('p1', next);
+          }
+          UI.hideInspector();
+          renderDuo();
+          finishDuoTurn();
+        },
+        () => {
+          E.resolveDelayed(st, 'p1', false);
+          UI.hideInspector();
+          renderDuo();
+          finishDuoTurn();
+        }
+      );
+      return;
+    }
+    finishDuoTurn();
+  }
+
+  function finishDuoTurn() {
+    const st = app.duo;
+    if (!st) return;
+    const r = E.endTurn(st);
+    if (!r.ok) { UI.toast(r.error, 'error'); return; }
+    renderDuo();
+    if (st.phase === 'gameover') { setTimeout(showDuoEnd, 600); return; }
+    advanceDuoTurn('p1');
+  }
+
+  function duoInspect(uid) {
+    const st = app.duo;
+    if (!st || st.duo.activeId !== 'p1' || st.phase !== 'play') return;
+    UI.showCardInspector(st, uid);
+  }
+
+  function duoHandCardHtml(card) {
+    const st = app.duo;
+    const p1 = st.duo.sides.p1;
+    const info = E.playableInfo(st, p1, card);
+    const meta = C.TYPE_META[card.type] || { label: card.type };
+    return `<button type="button" class="card duo-card ${info.ok ? '' : 'disabled'}" data-duo-card="${card.uid}">
+      <span class="card-badge ${card.type}">${esc(meta.label)}</span>
+      <div class="card-inner"><img src="${card.img}" alt="${esc(card.name)}" loading="lazy" /></div>
+      <span class="card-value ${card.type}">${card.value}</span>
+      <span class="card-name-overlay">${esc(card.name)}</span>
+    </button>`;
+  }
+
+  function duoFighterHtml(side) {
+    const st = app.duo;
+    const active = st.duo.activeId === side.id;
+    const target = st.duo.targetId === side.id;
+    const dead = side.hp <= 0;
+    const team = duoTeamOf(side.id) === 'player' ? '我方' : '敌方';
+    const pct = Math.max(0, Math.round((side.hp / side.maxHp) * 100));
+    return `<button type="button" class="duo-fighter ${duoTeamOf(side.id)} ${active ? 'active' : ''} ${target ? 'target' : ''} ${dead ? 'dead' : ''}" data-duo-side="${side.id}">
+      <img src="${UI.portrait(side.char)}" alt="${esc(side.name)}" />
+      <span class="df-info">
+        <span class="df-team">${team}${active ? ' · 行动中' : ''}</span>
+        <b class="df-name">${esc(side.name)}</b>
+        <span class="df-hp"><span class="df-hp-bar"><span style="width:${pct}%"></span></span><b>${Math.max(0, side.hp)}</b></span>
+        <span class="df-meta"><span class="df-armor">🛡 ${E.totalArmor(side)}</span><span class="df-hand">手 ${side.hand.length}</span></span>
+      </span>
+    </button>`;
+  }
+
+  function renderDuo() {
+    const st = app.duo;
+    if (!st) return;
+    const sides = st.duo.sides;
+    const activeId = st.duo.activeId;
+    const actor = sides[activeId];
+    const foe = sides[st.duo.targetId];
+    $('#duo-round').textContent = st.round;
+    $('#duo-phase').textContent = st.phase === 'play' ? '出牌阶段' : (st.phase === 'gameover' ? '对局结束' : '准备阶段');
+    $('#duo-fighters').innerHTML = ['e1', 'e2', 'p1', 'p2'].map((id) => duoFighterHtml(sides[id])).join('');
+    $('#duo-turn-line').innerHTML = `<div>当前行动 <b>${esc(actor.name)}</b> · ${duoTeamOf(activeId) === 'player' ? '我方' : '敌方'}${st.phase === 'play' ? '' : '（等待）'}</div>`;
+    $('#duo-target-hint').innerHTML = st.duo.activeId === 'p1' && st.phase === 'play'
+      ? `当前目标：<b>${esc(foe.name)}</b> · 点击敌方角色切换目标`
+      : (st.phase === 'play' ? `当前目标：${esc(foe.name)}` : '');
+    const hand = $('#duo-hand');
+    if (activeId === 'p1' && st.phase === 'play') {
+      const p1 = sides.p1;
+      hand.innerHTML = p1.hand.length
+        ? p1.hand.map((c) => duoHandCardHtml(c)).join('')
+        : '<div class="duo-hand-empty">没有手牌</div>';
+      $('#duo-hand-info').textContent = `已出 ${p1.temp.playedCount || 0} / ${E.getPlayLimit(st, 'p1')} · 单击查看 / 双击出牌`;
+      $('#btn-duo-end').disabled = false;
+      const ultBtn = $('#btn-duo-ult');
+      if (ultBtn) {
+        const uc = E.canUseUltimate(st, 'p1');
+        ultBtn.disabled = !uc.ok;
+        ultBtn.title = uc.ok ? '发动职业必杀' : uc.reason;
+      }
+      $('#duo-status').textContent = '你的行动 · 选择目标并出牌';
+      $('#duo-end-sub').textContent = '点击结束本回合';
+    } else {
+      hand.innerHTML = `<div class="duo-hand-empty">${esc(actor.name)} 行动中…</div>`;
+      UI.hideInspector();
+      $('#duo-hand-info').textContent = '';
+      $('#btn-duo-end').disabled = true;
+      const ultBtn = $('#btn-duo-ult');
+      if (ultBtn) ultBtn.disabled = true;
+      $('#duo-status').textContent = st.phase === 'gameover' ? '对局结束' : '等待 AI 行动…';
+      $('#duo-end-sub').textContent = '等待行动';
+    }
+  }
+
+  function showDuoEnd() {
+    const st = app.duo;
+    if (!st) { showHome(); return; }
+    const win = st.winner === 'player';
+    const draw = st.winner === 'draw';
+    UI.showModal({
+      title: draw ? '2v2 平局' : (win ? '2v2 胜利' : '2v2 失败'),
+      subtitle: draw ? '双方队伍同时全灭' : (win ? '敌方队伍全灭' : '我方队伍全灭'),
+      body: `<div class="duo-result">${draw ? '平局' : (win ? '你们赢了！' : '你们输了……')}</div>`,
+      dismissable: false,
+      footer: [
+        { label: '返回大厅', onClick: () => { UI.closeModal(); showHome(); } },
+        { label: '再来一局', variant: 'primary', onClick: () => { UI.closeModal(); startDuoGame(); } },
+      ],
+    });
+  }
+
+  function startDuoGame() {
+    stopLan();
+    UI.closeModal();
+    UI.ensureAudio();
+    UI.clearToasts();
+    const p1Class = app.selectedClass;
+    const e1 = randomDuoClass([p1Class]);
+    const e2 = randomDuoClass([p1Class, e1.id]);
+    const p2 = randomDuoClass([p1Class, e1.id, e2.id]);
+    let p1Side;
+    let p2Side;
+    let e1Side;
+    let e2Side;
+    try {
+      p1Side = makeDuoSide(p1Class, 'p1', false);
+      p2Side = makeDuoSide(p2.id, 'p2', true);
+      e1Side = makeDuoSide(e1.id, 'e1', true);
+      e2Side = makeDuoSide(e2.id, 'e2', true);
+    } catch (err) {
+      UI.toast('2v2 角色创建失败：' + err.message, 'error');
+      return;
+    }
+    const base = E.createGame({ playerClass: p1Class, aiClass: e1.id });
+    base.duo = {
+      sides: { p1: p1Side, p2: p2Side, e1: e1Side, e2: e2Side },
+      teams: { player: ['p1', 'p2'], enemy: ['e1', 'e2'] },
+      order: DUO_ORDER.slice(),
+      activeId: 'p1',
+      targetId: 'e1',
+    };
+    // 四名角色来自不同临时对局，重新分配全局唯一卡牌 UID。
+    let duoSeq = base.cardSeq || 0;
+    ['p1', 'p2', 'e1', 'e2'].forEach((id) => {
+      const side = base.duo.sides[id];
+      [side.hand, side.deck, side.discard].forEach((pile) => {
+        pile.forEach((card) => { duoSeq += 1; card.uid = 'duo' + duoSeq; });
+      });
+    });
+    base.cardSeq = duoSeq;
+    base.player = p1Side;
+    base.ai = e1Side;
+    base.p1 = p1Side;
+    base.p2 = p2Side;
+    base.e1 = e1Side;
+    base.e2 = e2Side;
+    base.mode = 'duo';
+    base.round = 1;
+    base.turn = 0;
+    base.active = 'p1';
+    base.setupNeeded = [];
+    app.duo = base;
+    app.mode = 'duo';
+    app.duoLastClick = { uid: null, at: 0 };
+    showScreen('duo');
+    UI.renderDuo = renderDuo;
+    renderDuo();
+    startDuoTurn('p1');
   }
 
   /* ---------------- 局域网联机 ---------------- */
@@ -1356,7 +1855,8 @@
     if (el) el.textContent = app.ultimatesEnabled ? '必杀：启用' : '必杀：关闭';
     UI.ultimatesEnabled = app.ultimatesEnabled;
     try { localStorage.setItem('dd_ultimates', app.ultimatesEnabled ? '1' : '0'); } catch (e) { /* private mode */ }
-    if (app.screen === 'home') UI.updateHomeSelection(app.selectedClass);
+    if (app.screen === 'home') UI.renderHome(app.selectedClass);
+    if (app.screen === 'library') UI.updateLibrarySelection(app.selectedClass);
     if (!silent) {
       UI.toast(app.ultimatesEnabled ? '隐藏开关：必杀技已启用' : '隐藏开关：必杀技已关闭', app.ultimatesEnabled ? 'success' : '');
       UI.Sound.play(app.ultimatesEnabled ? 'ult' : 'deselect');
@@ -1376,7 +1876,8 @@
       if (!btn) return;
       const classId = btn.dataset.classId;
       app.selectedClass = classId;
-      UI.updateHomeSelection(app.selectedClass);
+      try { localStorage.setItem('dd_class', classId); } catch (e) { /* private mode */ }
+      UI.updateLibrarySelection(app.selectedClass);
       UI.Sound.play('click');
       // 隐藏开关：连续点击预言家 5 次，切换必杀技启用状态
       if (classId === 'yuyanjia') {
@@ -1392,23 +1893,44 @@
         app.ultClickCount = 0;
       }
     });
-    $('#btn-random-class').addEventListener('click', () => {
-      const pool = C.CLASS_LIST.filter((c) => c.id !== app.selectedClass);
-      app.selectedClass = pool[Math.floor(Math.random() * pool.length)].id;
-      UI.updateHomeSelection(app.selectedClass);
-      UI.Sound.play('select');
-      UI.toast('随机职业：' + C.CLASSES[app.selectedClass].name, 'success');
-    });
     $('#btn-start').addEventListener('click', launchGame);
+    $('#btn-duo').addEventListener('click', startDuoGame);
+    $('#btn-library').addEventListener('click', showLibrary);
+    $('#btn-library-back').addEventListener('click', showHome);
+    $('#btn-library-start').addEventListener('click', launchGame);
     $('#btn-lan').addEventListener('click', openLanModal);
-    $('#btn-jump-classes').addEventListener('click', () => {
-      const panel = document.querySelector('.picker-panel');
-      if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      UI.Sound.play('click');
-    });
     $('#btn-tutorial').addEventListener('click', () => UI.showTutorial(startTutorialGame));
     $('#btn-rules-home').addEventListener('click', UI.showRules);
     $('#btn-rules-game').addEventListener('click', UI.showRules);
+    $('#btn-duo-rules').addEventListener('click', UI.showRules);
+    $('#btn-duo-sound').addEventListener('click', toggleSound);
+    $('#btn-duo-exit').addEventListener('click', showHome);
+    $('#btn-duo-end').addEventListener('click', () => { UI.Sound.play('click'); duoEndTurn(); });
+    $('#btn-duo-ult').addEventListener('click', () => { UI.Sound.play('click'); duoUseUltimate(); });
+    $('#duo-fighters').addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-duo-side]');
+      if (btn) duoSelectTarget(btn.dataset.duoSide);
+    });
+    $('#duo-hand').addEventListener('click', (e) => {
+      const card = e.target.closest('[data-duo-card]');
+      if (!card) return;
+      const uid = card.dataset.duoCard;
+      const now = Date.now();
+      if (app.duoLastClick.uid === uid && now - app.duoLastClick.at < 700) {
+        app.duoLastClick = { uid: null, at: 0 };
+        const st = app.duo;
+        const p1 = st && st.duo.sides.p1;
+        const handCard = p1 && p1.hand.find((c) => c.uid === uid);
+        if (!handCard) return;
+        const info = E.playableInfo(st, p1, handCard);
+        if (!info.ok) { UI.toast(info.reason, 'error'); return; }
+        duoPlayCard(uid);
+      } else {
+        app.duoLastClick = { uid, at: now };
+        duoInspect(uid);
+        UI.Sound.play('select');
+      }
+    });
     $('#btn-sound').addEventListener('click', toggleSound);
     $('#btn-sound-game').addEventListener('click', toggleSound);
     window.addEventListener('pointerdown', () => UI.ensureAudio(), { once: true });
@@ -1438,7 +1960,35 @@
       UI.Sound.play('click');
       useAbility(btn.dataset.ability);
     });
-    $('#btn-surrender').addEventListener('click', () => {
+    $('#btn-skill-active').addEventListener('click', () => { UI.Sound.play('click'); useBattleActiveSkill(); });
+    $('#btn-skill-ultimate').addEventListener('click', () => { UI.Sound.play('click'); useBattleUltimate(); });
+    $('#btn-mini-active').addEventListener('click', () => { UI.Sound.play('click'); useBattleActiveSkill(); });
+    $('#btn-mini-ultimate').addEventListener('click', () => { UI.Sound.play('click'); useBattleUltimate(); });
+    $('#btn-mini-end').addEventListener('click', () => { UI.Sound.play('click'); endPlayerTurn(); });
+    $('#btn-round-end').addEventListener('click', () => { UI.Sound.play('click'); endPlayerTurn(); });
+    $('#btn-char-passive').addEventListener('click', (e) => {
+      e.stopPropagation();
+      UI.Sound.play('click');
+      useBattlePassive();
+    });
+    $('#btn-char-ultimate').addEventListener('click', (e) => {
+      e.stopPropagation();
+      UI.Sound.play('click');
+      useBattleUltimate();
+    });
+    [$('#ai-card-img'), $('#player-card-img')].forEach((cardImg) => {
+      if (!cardImg) return;
+      cardImg.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const st = app.game;
+        if (!st) return;
+        UI.showClass(cardImg.id === 'ai-card-img' ? st.ai.classId : st.player.classId);
+      });
+    });
+    $('#btn-surrender').addEventListener('click', surrenderGame);
+    $('#btn-surrender-mini').addEventListener('click', surrenderGame);
+  }
+  function surrenderGame() {
       if (!app.game || app.game.phase === 'gameover') return;
       UI.confirm({
         title: '认输',
@@ -1456,7 +2006,6 @@
           showEnd();
         },
       });
-    });
   }
 
   function toggleSound() {
@@ -1466,17 +2015,94 @@
   }
 
   /* ---------------- 启动 ---------------- */
+  function useBattleActiveSkill() {
+    const bar = $('#ability-bar');
+    if (!bar) return;
+    const btns = Array.from(bar.querySelectorAll('.ability-btn[data-ability]:not(.ultimate):not([disabled])'));
+    if (!btns.length) { UI.toast('该职业当前没有可用的主动技能', 'error'); return; }
+    if (btns.length === 1) { btns[0].click(); return; }
+    UI.showModal({
+      title: '选择主动技能',
+      narrow: true,
+      body: `<div class="prep-actions">${btns.map((b, i) => `<button type="button" class="prep-action" data-skill-pick="${i}"><b>${esc(b.textContent.trim())}</b></button>`).join('')}</div>`,
+      footer: [{ label: '取消', onClick: () => UI.closeModal() }],
+      onMount(root) {
+        root.querySelectorAll('[data-skill-pick]').forEach((btn) => btn.addEventListener('click', () => {
+          const idx = Number(btn.dataset.skillPick);
+          UI.closeModal();
+          if (btns[idx]) btns[idx].click();
+        }));
+      },
+    });
+  }
+
+  function performBattlePassive() {
+    const st = app.game;
+    if (!st || !st.player) return;
+    const p = st.player;
+    if (!UI.activePassiveName(p)) return;
+    if (p.classId === 'dutu') {
+      if (st.phase !== 'play') { UI.toast('出牌阶段才能下注', 'error'); return; }
+      if (p.temp.gamblerBet) { UI.toast('本张牌已经下注', 'error'); return; }
+      if (!p.deck.length) { UI.toast('牌库为空，无法下注', 'error'); return; }
+      UI.showTypeChoice({
+        title: '下注 · 猜测牌库顶类型',
+        subtitle: '猜中：此卡额外 1/2 结算；猜错：此卡效果减半',
+        onPick(type) {
+          const gr = E.placeGamble(st, 'player', type);
+          if (!gr.ok) { UI.toast(gr.error, 'error'); return; }
+          renderGame(false);
+          UI.showGambleReveal(gr, () => renderGame(false));
+        },
+      });
+      return;
+    }
+    if (p.classId === 'rose') {
+      if (p.long.delayedCard) { UI.toast('已有延授牌未结算', 'error'); return; }
+      UI.showRoseDelayPrompt(
+        () => { E.setRoseDelay(st, 'player', true); renderGame(false); UI.toast('已发动延授：本回合只能打出 1 张牌', 'success'); },
+        () => { E.setRoseDelay(st, 'player', false); renderGame(false); UI.toast('本回合正常出牌', 'success'); }
+      );
+      return;
+    }
+    useBattleActiveSkill();
+  }
+
+  function useBattlePassive() {
+    const st = app.game;
+    if (!st || !st.player) return;
+    const p = st.player;
+    const activeName = UI.activePassiveName(p);
+    if (!activeName) { UI.showPassive(st); return; }
+    const isToggle = p.classId === 'xunqing';
+    if (isToggle) { performBattlePassive(); return; }
+    const on = false;
+    UI.showModal({
+      title: isToggle ? (on ? '关闭「' + activeName + '」？' : '开启「' + activeName + '」？') : '发动「' + activeName + '」？',
+      narrow: true,
+      body: `<div class="rule-note">${isToggle
+        ? (on ? '关闭后本回合不再触发同殇反伤。' : '开启后受到伤害时，自己承受 1.5 倍伤害并使对方受到原伤害。')
+        : '确认发动常驻被动【' + esc(activeName) + '】？'}</div>`,
+      footer: [
+        { label: '取消', onClick: () => UI.closeModal() },
+        { label: isToggle ? (on ? '确认关闭' : '确认开启') : '确认发动', variant: 'primary', onClick: () => { UI.closeModal(); performBattlePassive(); } },
+      ],
+    });
+  }
+
+  function useBattleUltimate() {
+    const bar = $('#ability-bar');
+    if (!bar) return;
+    const btn = bar.querySelector('.ability-btn.ultimate:not([disabled])');
+    if (!btn) { UI.toast('当前无法发动必杀技', 'error'); return; }
+    btn.click();
+  }
+
   function init() {
     applyUltimateSetting(true);
     UI.renderHome(app.selectedClass);
     UI.setSoundUI();
     bind();
-    // 首次提示
-    let seen = null;
-    try { seen = localStorage.getItem('dd_seen_intro'); localStorage.setItem('dd_seen_intro', '1'); } catch (e) { /* private mode */ }
-    if (!seen) {
-      setTimeout(() => UI.toast('选择职业 → 开始对局。回合开始自动摸牌；单击查看、双击出牌，每张牌立即结算。'), 700);
-    }
     // 公告：优先读取 assets/inform/in.txt；file:// 直接打开时 fetch 会被浏览器拦截，
     // 因此提供一份与当前 in.txt 一致的兜底文本，保证双击 index.html 也能看到公告。
     const fallbackAnnouncement = '新增角色\n增加动画\n修改了一部分角色\n\n求赞助喵....';

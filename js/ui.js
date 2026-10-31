@@ -19,6 +19,9 @@
     lastLogCount: 0,
     lastDrawSeq: 0,
     lastPlaySeq: 0,
+    lastPlayBySide: {},
+    playedCardSeq: 0,
+    playedCardTimer: null,
     lastArmor: { player: null, ai: null },
     lastShieldHitSeq: 0,
     lastKuaishouSeq: 0,
@@ -78,40 +81,72 @@
     },
   };
 
-  /* ================= 首页 ================= */
+  /* ================= 大厅 ================= */
+  function classCardHtml(cls, selectedId) {
+    return `<button type="button" class="class-card ${cls.id === selectedId ? 'selected' : ''}" data-class-id="${cls.id}" aria-label="${esc(cls.name)}">
+      <img src="${cls.img.replace('/characters/', '/portraits/')}" alt="${esc(cls.name)}" loading="lazy" />
+      <span class="cc-hp">${cls.hp} HP</span>
+      <span class="cc-tag">${esc(cls.tags[0] || '')}</span>
+      <span class="cc-name">${esc(cls.name)}</span>
+    </button>`;
+  }
+
   UI.renderHome = function (selectedId) {
-    const grid = $('#class-grid');
-    grid.innerHTML = C.CLASS_LIST.map((cls) => `
-      <button type="button" class="class-card ${cls.id === selectedId ? 'selected' : ''}" data-class-id="${cls.id}" aria-label="${esc(cls.name)}">
-        <img src="${cls.img.replace('/characters/', '/portraits/')}" alt="${esc(cls.name)}" loading="lazy" />
-        <span class="cc-hp">${cls.hp} HP</span>
-        <span class="cc-tag">${esc(cls.tags[0] || '')}</span>
-        <span class="cc-name">${esc(cls.name)}</span>
-      </button>`).join('');
-    $('#class-count').textContent = C.CLASS_LIST.length;
-    UI.updateHomeSelection(selectedId);
+    const cls = C.CLASSES[selectedId];
+    const cur = $('#hub-current');
+    if (cur) {
+      cur.innerHTML = cls
+        ? `<span>当前角色</span><b>${esc(cls.name)}</b><i>${cls.hp} HP</i><em>${esc(cls.passiveName)}</em>`
+        : '<span>当前角色</span><b>未选择</b>';
+    }
   };
 
+  // 兼容旧调用：大厅只显示当前角色，不再渲染角色网格。
   UI.updateHomeSelection = function (selectedId) {
+    UI.renderHome(selectedId);
+  };
+
+  UI.renderLibrary = function (selectedId) {
+    const grid = $('#class-grid');
+    if (grid) grid.innerHTML = C.CLASS_LIST.map((cls) => classCardHtml(cls, selectedId)).join('');
+
+    const list = $('#library-card-list');
+    if (list) {
+      list.innerHTML = C.CARD_LIST.map((card) => {
+        const meta = C.TYPE_META[card.type] || { label: card.type };
+        return `<article class="lib-card" data-card-id="${card.id}">
+          <img src="${card.img}" alt="${esc(card.name)}" loading="lazy" />
+          <div class="lib-card-info">
+            <div class="lib-card-top"><b>${esc(card.name)}</b><span>${esc(meta.label)} · ${card.value}</span></div>
+            <p>${esc(card.desc)}</p>
+          </div>
+        </article>`;
+      }).join('');
+    }
+
+    const count = $('#class-count');
+    if (count) count.textContent = C.CLASS_LIST.length;
+    UI.updateLibrarySelection(selectedId);
+  };
+
+  UI.updateLibrarySelection = function (selectedId) {
     $$('.class-card').forEach((el) => el.classList.toggle('selected', el.dataset.classId === selectedId));
     const cls = C.CLASSES[selectedId];
-    const wrap = $('#selected-preview');
+    const wrap = $('#library-selected');
+    if (!wrap) return;
     if (!cls) {
-      wrap.innerHTML = '<div class="sp-placeholder">选择一个职业开始</div>';
+      wrap.innerHTML = '<div class="lib-sel-placeholder">请选择一个角色</div>';
       return;
     }
     wrap.innerHTML = `
-      <div class="sp-art"><img src="${cls.img.replace('/characters/', '/portraits/')}" alt="${esc(cls.name)}" /></div>
-      <div class="sp-body">
-        <div class="sp-top">
-          <span class="sp-name">${esc(cls.name)}</span>
-          <span class="sp-tag">${cls.hp} HP</span>
-          ${cls.tags.map((t) => `<span class="sp-tag">${esc(t)}</span>`).join('')}
-          <button class="sp-detail" type="button" id="btn-class-detail">详情 →</button>
-        </div>
-        <div class="sp-passive">【${esc(cls.passiveName)}】${esc(cls.passiveText)}</div>
-        <div class="sp-ult">必杀 · ${esc(cls.ultimateName)}（${esc(cls.ultimateCost)}）${UI.ultimatesEnabled === false ? ' · <b>已关闭</b>' : ''}</div>
-      </div>`;
+      <div class="lib-sel-art"><img src="${cls.img.replace('/characters/', '/portraits/')}" alt="${esc(cls.name)}" /></div>
+      <div class="lib-sel-body">
+        <div class="lib-sel-title"><span>当前选中角色：</span><b>${esc(cls.name)}</b><i>${cls.hp} HP</i>${cls.tags.map((t) => `<em>${esc(t)}</em>`).join('')}</div>
+        <p><strong>${esc(cls.passiveName)}</strong> ${esc(cls.passiveText)}</p>
+        ${cls.passiveName2 ? `<p><strong>${esc(cls.passiveName2)}</strong> ${esc(cls.passiveText2)}</p>` : ''}
+        <p class="lib-sel-ult">必杀 · ${esc(cls.ultimateName)}（${esc(cls.ultimateCost)}）${UI.ultimatesEnabled === false ? ' · 已关闭' : ''}</p>
+      </div>
+      <button class="ghost-btn lib-detail-btn" type="button" id="btn-class-detail">详情 →</button>`;
     const btn = $('#btn-class-detail');
     if (btn) btn.addEventListener('click', () => UI.showClass(selectedId));
   };
@@ -224,6 +259,35 @@
         $$('[data-rule-tab]', UI.modal.root).forEach((t) => t.classList.toggle('active', t === tab));
         $$('[data-rule-block]', UI.modal.root).forEach((b) => { b.style.display = b.dataset.ruleBlock === tab.dataset.ruleTab ? '' : 'none'; });
       });
+    });
+  };
+
+  const ACTIVE_PASSIVE_NAMES = {
+    chensiyu: '别吵，我在烧烤',
+    sanyueqi: '可爱即是正义',
+    kupai: '竭泽',
+    xunqing: '同殇',
+    moshushou: '快手',
+    ranxue: '新生',
+    yuyanjia: '前瞻',
+    langren: '月嚎',
+    shihuangzhe: '开拓',
+    rose: '延授',
+  };
+  UI.activePassiveName = function (side) {
+    return side && ACTIVE_PASSIVE_NAMES[side.classId] ? ACTIVE_PASSIVE_NAMES[side.classId] : '';
+  };
+
+  UI.showPassive = function (state) {
+    const p = state.player;
+    const c = p.char;
+    UI.showModal({
+      title: c.passiveName,
+      subtitle: '常驻被动 · ' + c.name,
+      narrow: true,
+      body: `<div class="skill-block"><h4>【${esc(c.passiveName)}】<span>常驻被动</span></h4><p>${esc(c.passiveText)}</p></div>
+        ${c.passiveName2 ? `<div class="skill-block"><h4>【${esc(c.passiveName2)}】<span>常驻被动</span></h4><p>${esc(c.passiveText2)}</p></div>` : ''}`,
+      footer: [{ label: '关闭', variant: 'primary', onClick: () => UI.closeModal() }],
     });
   };
 
@@ -351,8 +415,10 @@
     if (side.long.allSeeing) chips.push(['全知', 'green']);
     if (side.long.babyBonusMaxHp > 0) chips.push(['额外生命上限 ' + side.long.babyBonusMaxHp, 'green']);
     if (side.long.fanrenGuardUntil >= state.turn) chips.push(['凡躯护佑', 'blue']);
-    if (side.long.chensiyuTax) chips.push(['摸牌税', 'red']);
+    if (side.classId === 'chensiyu' && side.long.chensiyuTaxTurn === state.turn) chips.push(['摸牌·对方回血', 'red']);
     if (side.temp.skipPlay) chips.push(['跳过出牌', 'red']);
+    if (side.temp.delayActive) chips.push(['延授发动', 'gold']);
+    if (side.temp.gamblerBet) chips.push([side.temp.gamblerBet.correct ? '下注·猜中' : '下注·猜错', side.temp.gamblerBet.correct ? 'green' : 'red']);
     if (side.long.delayedCard) chips.push(['延授 ' + side.long.delayedCard.card.name + ' +' + side.long.delayedCard.boost, 'gold']);
     if (side.status.pendingDrawPenalty > 0) chips.push(['下回合摸牌-' + side.status.pendingDrawPenalty, '']);
     if (side.status.drawPenalty > 0) chips.push(['本回合摸牌-' + side.status.drawPenalty, '']);
@@ -370,6 +436,26 @@
 
   function setText(sel, value) { const el = $(sel); if (el) el.textContent = value; }
   function setWidth(sel, pct) { const el = $(sel); if (el) el.style.width = Math.max(0, Math.min(100, pct)) + '%'; }
+
+  function showHpChangeEffect(sideId, amount, type) {
+    const targetImg = document.getElementById(sideId === 'player' ? 'player-card-img' : 'ai-card-img');
+    const host = targetImg && targetImg.closest('.character-card');
+    if (!host) return;
+    const now = Date.now();
+    const key = type + ':' + amount;
+    const prev = UI.lastHpPop && UI.lastHpPop[sideId];
+    if (prev && prev.key === key && now - prev.at < 800) return;
+    UI.lastHpPop = UI.lastHpPop || {};
+    UI.lastHpPop[sideId] = { key, at: now };
+    host.querySelectorAll('.damage-pop').forEach((el) => el.remove());
+    const pop = document.createElement('div');
+    pop.className = 'damage-pop ' + type;
+    pop.textContent = (type === 'heal' ? '+' : '-') + amount;
+    pop.style.left = '50%';
+    pop.style.top = '50%';
+    host.appendChild(pop);
+    setTimeout(() => pop.remove(), 1050);
+  }
 
   UI.renderGame = function (state, opts) {
     opts = opts || {};
@@ -421,10 +507,131 @@
     setText('#hand-limit', myTurn
       ? (state.phase === 'play' ? `已出 ${(p.temp.playedCards || []).length} / ${global.DD_ENGINE.getPlayLimit(state, 'player')}` : `${p.hand.length} 张手牌`)
       : '等待对手行动');
+    const playedZone = $('#played-zone-card');
+    if (playedZone) {
+      const lp = state.lastPlay;
+      if (lp && lp.card && lp.seq !== UI.playedCardSeq) {
+        UI.playedCardSeq = lp.seq;
+        if (UI.playedCardTimer) clearTimeout(UI.playedCardTimer);
+        const invalid = !!(lp.summary && Array.isArray(lp.summary.notes) && lp.summary.notes.some((n) => n.indexOf('无效') >= 0));
+        const shardDefs = [
+          ['0% 0%', '-38px', '-30px', '-28deg'],
+          ['100% 0%', '38px', '-30px', '28deg'],
+          ['0% 100%', '-38px', '30px', '24deg'],
+          ['100% 100%', '38px', '30px', '-24deg'],
+        ];
+        const shards = invalid
+          ? `<div class="card-shards">${shardDefs.map(([pos, dx, dy, rot]) => `<i style="background-image:url('${lp.card.img}');background-position:${pos};--dx:${dx};--dy:${dy};--rot:${rot}"></i>`).join('')}</div>`
+          : '';
+        playedZone.innerHTML = `<div class="pz-cards"><div class="pz-card enter ${invalid ? 'invalid' : ''}"><img src="${lp.card.img}" alt="${esc(lp.card.name)}" />${shards}</div></div>`;
+        const enterCard = playedZone.querySelector('.pz-card');
+        if (enterCard) setTimeout(() => enterCard.classList.remove('enter'), 750);
+        UI.playedCardTimer = setTimeout(() => {
+          const current = playedZone.querySelector('.pz-card');
+          if (current) {
+            if (invalid) {
+              current.classList.add('shatter-card');
+              UI.playedCardTimer = setTimeout(() => {
+                playedZone.innerHTML = '';
+                UI.playedCardTimer = null;
+              }, 760);
+            } else {
+              current.classList.add('leaving');
+              UI.playedCardTimer = setTimeout(() => {
+                playedZone.innerHTML = '';
+                UI.playedCardTimer = null;
+              }, 260);
+            }
+          }
+        }, 900);
+      } else if (!lp) {
+        playedZone.innerHTML = '';
+      }
+    }
+    const aiCardImg = $('#ai-card-img');
+    if (aiCardImg) { aiCardImg.src = a.char.img; aiCardImg.alt = a.name; }
+    const playerCardImg = $('#player-card-img');
+    if (playerCardImg) { playerCardImg.src = p.char.img; playerCardImg.alt = p.name; }
+    const aiHpOrb = $('#ai-hp-orb');
+    if (aiHpOrb) aiHpOrb.textContent = Math.max(0, a.hp);
+    const playerHpOrb = $('#player-hp-orb');
+    if (playerHpOrb) playerHpOrb.textContent = Math.max(0, p.hp);
+    const activePassiveName = UI.activePassiveName(p);
+    const passiveBtn = $('#btn-char-passive');
+    if (passiveBtn) {
+      passiveBtn.hidden = false;
+      passiveBtn.textContent = activePassiveName || p.char.passiveName;
+      passiveBtn.title = activePassiveName
+        ? '主动被动 · ' + activePassiveName
+        : '常驻被动 · ' + p.char.passiveName;
+      const passiveOn = p.classId === 'xunqing' && !!p.long.sameSorrow;
+      passiveBtn.classList.toggle('passive-on', passiveOn);
+    }
+    const ultimateBtn = $('#btn-char-ultimate');
+    if (ultimateBtn) {
+      ultimateBtn.textContent = p.char.ultimateName;
+      ultimateBtn.title = '必杀技 · ' + p.char.ultimateName;
+    }
+
+    // 角色护盾：颜色与尺寸由护甲层级决定（金 > 蓝 > 白）。
+    [['ai', a], ['player', p]].forEach(([id, side]) => {
+      const shieldEl = $('#' + id + '-char-shield');
+      if (!shieldEl) return;
+      const armor = global.DD_ENGINE.totalArmor(side);
+      const tier = side.long.armorTier || side.long.extraArmorTier
+        || (armor >= 7 ? 'gold' : armor >= 5 ? 'blue' : armor > 0 ? 'white' : null);
+      shieldEl.className = 'char-shield' + (armor > 0 ? ' active ' + (tier || 'white') : '');
+      const shards = shieldEl.querySelectorAll('.shield-shards i');
+      shards.forEach((shard, i) => { shard.style.setProperty('--a', (i * 45) + 'deg'); shard.style.setProperty('--d', i); });
+      const badge = $('#' + id + '-shield-badge');
+      if (badge) {
+        badge.className = 'shield-badge' + (armor > 0 ? ' show ' + (tier || 'white') : '');
+        const countEl = $('#' + id + '-shield-count');
+        if (countEl) countEl.textContent = armor;
+      }
+    });
+
+    // 护盾受击 / 碎盾：读取本次新增战斗日志中的“抵挡”记录。
+    if (!UI.lastShieldLogLen || state.log.length < UI.lastShieldLogLen) UI.lastShieldLogLen = 0;
+    const newShieldLogs = state.log.slice(UI.lastShieldLogLen);
+    const hitLog = newShieldLogs.slice().reverse().find((l) => l && l.kind === 'armor' && l.sideId && l.text.indexOf('抵挡') >= 0);
+    if (hitLog) {
+      const sid = hitLog.sideId === 'player' ? 'player' : 'ai';
+      const shieldEl = $('#' + sid + '-char-shield');
+      if (shieldEl) {
+        const broken = global.DD_ENGINE.totalArmor(sid === 'player' ? p : a) <= 0;
+        shieldEl.classList.remove('hit', 'shatter');
+        void shieldEl.offsetWidth;
+        shieldEl.classList.add(broken ? 'shatter' : 'hit');
+        setTimeout(() => shieldEl.classList.remove('hit', 'shatter'), 700);
+      }
+    }
+    UI.lastShieldLogLen = state.log.length;
+
+    // 任何生命值变化：显示前后实际差值（受伤红字 / 回复绿字）。
+    if (UI.hpSnapshot) {
+      let anyDamage = false;
+      [['ai', a], ['player', p]].forEach(([id, side]) => {
+        const before = UI.hpSnapshot[id] == null ? side.hp : UI.hpSnapshot[id];
+        const diff = side.hp - before;
+        if (diff < 0) { showHpChangeEffect(id, -diff, 'damage'); anyDamage = true; }
+        else if (diff > 0) showHpChangeEffect(id, diff, 'heal');
+      });
+      if (anyDamage) {
+        const screen = document.getElementById('screen-game');
+        if (screen) {
+          screen.classList.remove('screen-shake');
+          void screen.offsetWidth;
+          screen.classList.add('screen-shake');
+          setTimeout(() => screen.classList.remove('screen-shake'), 300);
+        }
+      }
+    }
+    UI.hpSnapshot = { player: p.hp, ai: state.ai.hp };
     const aiArt = $('#ai-art');
-    if (aiArt) aiArt.innerHTML = `<img src="${a.char.originalImg || portrait(a.char)}" alt="${esc(a.name)}">`;
+    if (aiArt) aiArt.innerHTML = `<img src="${portrait(a.char)}" alt="${esc(a.name)}">`;
     const pArt = $('#player-art');
-    if (pArt) pArt.innerHTML = `<img src="${p.char.originalImg || portrait(p.char)}" alt="${esc(p.name)}">`;
+    if (pArt) pArt.innerHTML = `<img src="${portrait(p.char)}" alt="${esc(p.name)}">`;
     const aiDuel = $('#duel-ai-avatar'); const pDuel = $('#duel-player-avatar');
     if (aiDuel) aiDuel.innerHTML = `<img src="${portrait(a.char)}" alt="${esc(a.name)}" />`;
     if (pDuel) pDuel.innerHTML = `<img src="${portrait(p.char)}" alt="${esc(p.name)}" />`;
@@ -445,6 +652,10 @@
         + (count > n ? `<span class="back-more">+${count - n}</span>` : '');
     };
     renderBacks('ai-hand-backs', a.hand.length);
+    const enemyHandRow = $('#enemy-hand-row');
+    if (enemyHandRow) {
+      enemyHandRow.innerHTML = Array.from({ length: a.hand.length }, () => '<img class="ehr-back" src="assets/back.webp" alt="" />').join('');
+    }
     renderBacks('player-hand-backs', p.hand.length);
 
     // 船长计数器
@@ -466,14 +677,6 @@
       const total = global.DD_ENGINE.totalArmor(side);
       aura.classList.toggle('hidden', total <= 0);
       aura.className = 'shield-aura' + (total <= 0 ? ' hidden' : '') + ' aura-' + ((side.armor > 0 ? side.long.armorTier : side.long.extraArmorTier) || side.long.armorTier || 'white');
-    });
-    // 点击角色查看详情
-    ['#fighter-ai', '#fighter-player', '#duel-ai-avatar', '#duel-player-avatar'].forEach((sel) => {
-      const el = $(sel);
-      if (el) {
-        el.onclick = () => UI.showClass(sel.indexOf('ai') >= 0 ? a.classId : p.classId);
-        el.style.cursor = 'pointer';
-      }
     });
 
     // 情报
@@ -511,6 +714,8 @@
     renderAbilities(state);
     renderFeed(state, opts);
     updateCommandBar(state);
+    const roundEndBtn = $('#btn-round-end');
+    if (roundEndBtn) roundEndBtn.disabled = !(myTurn && state.phase === 'play');
     renderVisualEvents(state, opts);
   };
 
@@ -646,6 +851,12 @@
     UI.lastHp = { player: null, ai: null };
     UI.lastDrawSeq = 0;
     UI.lastPlaySeq = 0;
+    UI.lastPlayBySide = {};
+    UI.playedCardSeq = 0;
+    UI.lastShieldLogLen = 0;
+    UI.hpSnapshot = null;
+    UI.lastHpPop = {};
+    if (UI.playedCardTimer) { clearTimeout(UI.playedCardTimer); UI.playedCardTimer = null; }
     UI.lastArmor = { player: null, ai: null };
     UI.lastShieldHitSeq = 0;
     UI.lastKuaishouSeq = 0;
@@ -738,7 +949,11 @@
     if (info.sameSorrow) add('sameSorrow', `${p.long.sameSorrow ? '✓ ' : ''}💞 同殇`, p.long.sameSorrow);
     if (!myTurn) {
       if (bar) bar.innerHTML = '<span class="ability-hint">对手回合，等待对手行动…</span>';
+      if (typeof UI.syncBattleSkills === 'function') UI.syncBattleSkills();
       return;
+    }
+    if (state.phase === 'play' && buttons.length === 0) {
+      buttons.push('<button type="button" class="ability-btn active" disabled>主动技</button>');
     }
     const ult = global.DD_ENGINE.canUseUltimate(state, 'player');
     if (state.ultimatesEnabled !== false && !p.long.ultimateUsed && state.phase === 'play') {
@@ -751,8 +966,42 @@
     } else if (state.phase === 'play' && !buttons.length) {
       buttons.push(`<span class="ability-hint">单击查看 · 双击打出，最多 ${global.DD_ENGINE.getPlayLimit(state, 'player')} 张</span>`);
     }
+    if (state.phase === 'play' && p.long.ultimateUsed && state.ultimatesEnabled !== false) {
+      buttons.push('<button type="button" class="ability-btn ultimate" disabled>必杀技</button>');
+    }
     if (bar) bar.innerHTML = buttons.join('');
+    if (typeof UI.syncBattleSkills === 'function') UI.syncBattleSkills();
   }
+
+  UI.syncBattleSkills = function () {
+    const bar = $('#ability-bar');
+    if (!bar) return;
+    const activeBtns = Array.from(bar.querySelectorAll('.ability-btn[data-ability]:not(.ultimate):not([disabled])'));
+    const ultBtn = Array.from(bar.querySelectorAll('.ability-btn.ultimate')).find((b) => !b.disabled) || null;
+    const ab = $('#btn-skill-active');
+    const ub = $('#btn-skill-ultimate');
+    if (ab) {
+      ab.disabled = !activeBtns.length;
+      ab.title = activeBtns.length ? activeBtns.map((b) => b.textContent.trim()).join(' / ') : '该职业没有可用的主动技能';
+      ab.setAttribute('aria-disabled', activeBtns.length ? 'false' : 'true');
+    }
+    if (ub) {
+      ub.disabled = !ultBtn;
+      ub.title = ultBtn ? ultBtn.textContent.trim() : '当前无法发动必杀';
+      ub.setAttribute('aria-disabled', ultBtn ? 'false' : 'true');
+    }
+    const ma = $('#btn-mini-active');
+    if (ma) { ma.disabled = !activeBtns.length; ma.title = ab ? ab.title : '主动技能'; }
+    const mu = $('#btn-mini-ultimate');
+    if (mu) { mu.disabled = !ultBtn; mu.title = ub ? ub.title : '必杀技'; }
+    const me = $('#btn-mini-end');
+    const commit = $('#btn-commit');
+    if (me && commit) me.disabled = commit.disabled;
+    const re = $('#btn-round-end');
+    if (re && commit) re.disabled = commit.disabled;
+    const cu = $('#btn-char-ultimate');
+    if (cu) cu.disabled = !ultBtn;
+  };
 
   function renderFeed(state, opts) {
     const feed = $('#battle-feed');
@@ -949,7 +1198,7 @@
       body,
       dismissable: false,
       footer: [
-        { label: '取消', onClick: () => UI.closeModal() },
+        { label: '取消', onClick: () => { UI.closeModal(); if (opts.onCancel) opts.onCancel(); } },
         { label: opts.confirmLabel || '确认', variant: 'primary', onClick: () => {
           if (selected.length < min || selected.length > max) return;
           UI.closeModal();
@@ -986,11 +1235,11 @@
       wide: true,
       body: `
         <div class="tutorial">
-          <div class="tut-step"><b>1. 选职业</b><p>首页选 1 个职业；每个职业有常驻被动和每局 1 次的必杀。</p></div>
+          <div class="tut-step"><b>1. 选职业</b><p>在大厅进入「卡牌库」选择角色；每个职业有常驻被动和每局 1 次的必杀。</p></div>
           <div class="tut-step"><b>2. 回合流程</b><p>轮到你时自动摸牌。准备阶段若有关键能力，会弹窗询问是否发动。</p></div>
           <div class="tut-step"><b>3. 单击 / 双击</b><p>单击手牌查看详情并高亮；再次点击或双击立即打出，单张牌会实时结算。</p></div>
           <div class="tut-step"><b>4. 护盾</b><p>护甲抵挡破甲伤害；自己下回合开始时普通护甲消散。双叠甲未碎会留下额外护盾。</p></div>
-          <div class="tut-step"><b>5. 必杀开关</b><p>在首页连续点击预言家 5 下，可以切换本局是否启用必杀。</p></div>
+          <div class="tut-step"><b>5. 必杀开关</b><p>在「卡牌库」的角色库中连续点击预言家 5 下，可以切换本局是否启用必杀。</p></div>
           <div class="tut-step"><b>6. 联机</b><p>局域网联机需要电脑运行「手机访问-局域网服务器.bat」，两台设备打开同一网址。</p></div>
         </div>`,
       footer: [{ label: '开始游戏', variant: 'primary', onClick: () => { UI.closeModal(); if (onStart) onStart(); } }],
@@ -1019,6 +1268,41 @@
     });
   };
 
+  UI.showGambleReveal = function (result, onDone) {
+    const top = result && result.top;
+    if (!top) { if (onDone) onDone(); return; }
+    const typeLabel = (global.DD_CONFIG.TYPE_META[top.type] || {}).label || top.type;
+    UI.showModal({
+      title: '下注 · ' + (result.correct ? '猜中' : '猜错'),
+      subtitle: result.correct ? '此卡结算后额外进行 1/2 数值结算' : '此卡本次结算无效',
+      narrow: true,
+      dismissable: false,
+      body: `<div class="gamble-reveal">
+        <div class="gamble-top-card"><img src="${top.img}" alt="${esc(top.name)}" /><b>${esc(top.name)}</b><i>${esc(typeLabel)} · ${top.value}</i></div>
+        <p>${result.correct ? '猜中！牌库顶的卡已进入弃牌堆。' : '猜错，此卡无效；牌库顶的卡也已进入弃牌堆。'}</p>
+      </div>`,
+      footer: [{ label: '继续出牌', variant: 'primary', onClick: () => { UI.closeModal(); if (onDone) onDone(); } }],
+    });
+  };
+
+  UI.showRoseDelayPrompt = function (onActivate, onDecline) {
+    UI.showModal({
+      title: '延授 · 是否发动？',
+      subtitle: '抽牌阶段结束',
+      narrow: true,
+      dismissable: false,
+      body: `<div class="rose-delay-prompt">
+        <p><b>发动：</b>本回合只能打出 1 张牌，这张牌的效果延迟到下回合出牌阶段最后。</p>
+        <p><b>不发动：</b>本回合可正常打出 2 张牌，效果立即结算。</p>
+        <p class="tut-tip">已有延授牌未结算时，下回合抽牌结束后不会再次询问。</p>
+      </div>`,
+      footer: [
+        { label: '不发动 · 正常出牌', onClick: () => { UI.closeModal(); onDecline(); } },
+        { label: '发动延授', variant: 'primary', onClick: () => { UI.closeModal(); onActivate(); } },
+      ],
+    });
+  };
+
   UI.showAnnouncement = function (text) {
     const lines = String(text || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
     if (!lines.length) return;
@@ -1036,7 +1320,7 @@
     const cards = ev.cards || [];
     UI.showModal({
       title: '神偷 · 对方牌库顶端三张',
-      subtitle: '宣言「' + ev.declaredLabel + '」 · 符合 ' + ev.matches + ' 张 · 可选 ' + ev.maxPick + ' 张',
+      subtitle: '宣言「' + ev.declaredLabel + '」 · 符合 ' + ev.matches + ' 张 · 需选 ' + ev.maxPick + ' 张',
       narrow: true,
       body: `<div class="ks-ult-grid">${cards.map((c) => `
         <div class="ks-ult-card ${c.type === ev.declared ? 'matched' : ''}">
