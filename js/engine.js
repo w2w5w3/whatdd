@@ -1,5 +1,5 @@
 /* ============================================================
- * 烬契 · EMBER PACT
+ * 我的刀盾 · BLADE & SHIELD
  * engine.js — 回合、卡牌、护甲、伤害与 24 职业规则引擎
  * 无 DOM 依赖，可单独在 Node 中运行测试。
  * ============================================================ */
@@ -34,6 +34,7 @@
       kupaiUsed: false,
       yuxueNextDamage: 0,
       ranxueNextBonus: 0,
+      ranxueTurnBonus: 0,
       ranxueNewUsed: false,
       ranxueBloodUsed: false,
       wolfMode: null,
@@ -44,13 +45,14 @@
       destinyUsed: false,
       destinyCard: null,
       meiguiDelayed: null,
-      meiguiArmed: false,
       meiguiActive: false,
       dutuBetUsed: false,
       dutuBetActive: false,
       armorBanNext: false,
       breakNormalNext: false,
       armorValuesThisTurn: [],
+      survivalShield: null,
+      extraShieldExpireTurn: 0,
     };
   }
 
@@ -190,7 +192,7 @@
         this.makePlayer(0, this.playerHeroId),
         this.makePlayer(1, this.enemyHeroId),
       ];
-      this.log('烬契对局开始：' + this.players[0].name + ' 对阵 ' + this.players[1].name, 'turn');
+      this.log('我的刀盾 对局开始：' + this.players[0].name + ' 对阵 ' + this.players[1].name, 'turn');
       this.log('双方各持 30 张固定牌库，初始 0 护甲、0 手牌。', 'system');
       this.update();
       await this.wait(300);
@@ -236,6 +238,51 @@
     }
 
     /* ---------------- 回合流程 ---------------- */
+    processExtraShieldExpiry(p) {
+      if (!p.extraShield) {
+        p.flags.extraShieldExpireTurn = 0;
+        return;
+      }
+      if (p.flags.extraShieldExpireTurn && this.state.turnNumber >= p.flags.extraShieldExpireTurn) {
+        const value = p.extraShield;
+        p.extraShield = 0;
+        p.flags.extraShieldExpireTurn = 0;
+        this.log('「余盾」：' + p.name + ' 的 ' + value + ' 点额外护盾在回合开始时消散。', 'armor');
+        this.fx('extraShieldExpire', { player: p.index });
+        this.update();
+      }
+    }
+
+    recordSurvivalShield(p) {
+      if (!(p.flags.armorValuesThisTurn || []).length) return;
+      p.flags.survivalShield = {
+        fromTurn: this.state.turnNumber,
+        cardId: p.flags.lastArmorCardId,
+      };
+    }
+
+    processSurvivalShield(p) {
+      const pending = p.flags.survivalShield;
+      if (!pending) return;
+      p.flags.survivalShield = null;
+      if (pending.fromTurn >= this.state.turnNumber) return;
+      if (p.heroId === 'sanyueqi') {
+        this.log('「少女的特权」：三月七无法将存活的护盾转化为额外护盾。', 'skill');
+        return;
+      }
+      if (p.armor <= 0) {
+        this.log('「余盾」：上回合的护盾已被击碎，未能转化为额外护盾。', 'armor');
+        return;
+      }
+      const value = p.armor;
+      p.armor = 0;
+      p.extraShield = value;
+      p.flags.extraShieldExpireTurn = this.state.turnNumber + 2;
+      this.log('「余盾」：' + value + ' 点普通护甲全部转化为额外护盾，普通护甲清零；额外护盾将在再下一个自己回合开始时消散。', 'armor');
+      this.fx('extraShieldConvert', { player: p.index, value, cardId: p.flags.lastArmorCardId });
+      this.update();
+    }
+
     async beginTurn(pi) {
       if (this.state.over) return;
       const p = this.players[pi];
@@ -257,6 +304,10 @@
       p.flags.armorBanNext = false;
       p.breakAsNormal = !!p.flags.breakNormalNext;
       p.flags.breakNormalNext = false;
+
+      // 护盾存续：先处理上一轮额外护盾消散，再检查上回合护盾是否转化为额外护盾
+      this.processExtraShieldExpiry(p);
+      this.processSurvivalShield(p);
 
       this.busy = true;
       this.awaitingHuman = false;
@@ -596,25 +647,6 @@
         p.flags.dutuBetActive = false;
       }
 
-      // 玫瑰老师：封存此牌，延迟生效
-      if (p.flags.meiguiArmed && !p.flags.meiguiDelayed && p.heroId === 'meigui') {
-        p.flags.meiguiDelayed = {
-          cardId: def.id, virtualDef: card.def,
-          variant,
-          bonus: 0,
-          createdAtTurn: this.state.turnNumber,
-        };
-        p.flags.meiguiArmed = false;
-        p.flags.meiguiActive = true;
-        p.noNingshen = false;
-        this.log('「延授」封存了「' + def.name + '」，将在下回合出牌阶段最后发动。', 'skill');
-        this.fx('delay', { player: p.index, card: def });
-        // 被延授的牌进入弃牌堆由延迟结算处理；这里不放入
-        this.update();
-        await this.wait(260);
-        return true;
-      }
-
       this.log(p.name + ' 打出「' + def.name + '」。', 'play');
       this.fx('play', { player: p.index, card: def });
       // 攻击类卡牌留出极短的动画前摇，让攻击特效先于掉血出现；仍然属于打出即结算
@@ -845,52 +877,65 @@
 
     /* ---------------- 结算 ---------------- */
     async finishPlayPhase(p) {
-      // 玫瑰老师延迟牌
-      if (p.heroId === 'meigui' && p.flags.meiguiDelayed) {
-        const delay = p.flags.meiguiDelayed;
-        if (this.state.turnNumber > delay.createdAtTurn) {
-          const choice = await this.ask(p, {
-            kind: 'choose',
-            title: '延授 · 是否发动延迟的牌？',
-            desc: '「' + CG.CARD_MAP[delay.cardId].name + '」已封存至今，当前加成 +' + delay.bonus + '。',
-            options: [
-              { value: 'fire', label: '立即发动', desc: '按当前数值结算这张牌。' },
-              { value: 'wait', label: '再等一回合', desc: '此牌数值 +3，下回合出牌阶段最后再次询问。' },
-            ],
-            default: 'fire',
-          });
-          if (choice === 'wait') {
-            delay.bonus += 3;
-            delay.createdAtTurn = this.state.turnNumber;
-            this.log('「延授」继续封存「' + CG.CARD_MAP[delay.cardId].name + '」，数值 +3（当前 +' + delay.bonus + '）。', 'skill');
-            this.fx('delayWait', { player: p.index, bonus: delay.bonus });
-          } else {
-            const def = delay.virtualDef || CG.CARD_MAP[delay.cardId];
-            this.log('「延授」发动封存的「' + def.name + '」，延迟加成 +' + delay.bonus + '。', 'skill');
-            this.fx('delayFire', { player: p.index, card: def, bonus: delay.bonus });
-            p.flags.meiguiDelayed = null;
-            p.flags.meiguiActive = false;
-            await this.applyCardEffect(p, def, {
-              variant: delay.variant || {},
-              bonus: delay.bonus,
-              scale: 1,
-              isExtra: false,
-              sourceCard: null,
-            });
-            if (this.hasPending(p)) await this.resolvePending(p);
-            const discardCard = delay.virtualDef
-              ? createVirtualCard(delay.virtualDef)
-              : createCard(delay.cardId);
-            p.discard.push(discardCard);
-            if (await this.checkDeaths()) return;
-          }
-        }
-      }
-      if (p.flags.meiguiArmed && !p.flags.meiguiDelayed) {
-        p.flags.meiguiArmed = false;
-        this.log('「延授」没有封存任何牌，本回合结束。', 'warn');
-      }
       p.flags.dutuBetActive = false;
+    }
+
+    /**
+     * 玫瑰老师「延授」：弃置的牌在下一回合结束阶段发动。
+     * 届时可直接发动，或再延迟一回合并使数值 +2。
+     */
+    async resolveMeiguiDelay(p) {
+      if (this.state.over || p.heroId !== 'meigui' || !p.flags.meiguiDelayed) return;
+      const delay = p.flags.meiguiDelayed;
+      if (this.state.turnNumber <= delay.createdAtTurn) return;
+
+      const def = delay.virtualDef || CG.CARD_MAP[delay.cardId];
+      if (!def) {
+        p.flags.meiguiDelayed = null;
+        p.flags.meiguiActive = false;
+        return;
+      }
+      const enemy = this.other(p);
+      const choice = await this.ask(p, {
+        kind: 'choose',
+        title: '延授 · 结束阶段',
+        desc: '「' + def.name + '」已延迟至今，当前数值加成 +' + delay.bonus + '。',
+        options: [
+          { value: 'fire', label: '直接发动', desc: '在本次结束阶段立即结算这张牌的效果。' },
+          { value: 'wait', label: '继续延迟', desc: '延迟到下一回合结束阶段，此牌数值 +2。' },
+        ],
+        default: 'fire',
+      });
+      if (choice === 'wait') {
+        delay.bonus += 2;
+        delay.createdAtTurn = this.state.turnNumber;
+        this.log('「延授」继续延迟「' + def.name + '」，数值 +2（当前 +' + delay.bonus + '）。', 'skill');
+        this.fx('delayWait', { player: p.index, bonus: delay.bonus });
+        this.update();
+        return;
+      }
+
+      this.log('「延授」发动延迟的「' + def.name + '」，数值加成 +' + delay.bonus + '。', 'skill');
+      this.fx('delayFire', { player: p.index, card: def, bonus: delay.bonus });
+      p.flags.meiguiDelayed = null;
+      p.flags.meiguiActive = false;
+      await this.applyCardEffect(p, def, {
+        variant: {},
+        bonus: delay.bonus,
+        scale: 1,
+        isExtra: false,
+        sourceCard: null,
+      });
+
+      // 延迟牌仍会发动；但若当前目标不满足卡牌条件，只播放发动/状态效果，不造成伤害。
+      if (def.type === 'break' && this.totalShield(enemy) === 0 && !p.breakAsNormal) {
+        this.log('「延授」：对方无护甲，「' + def.name + '」的破甲效果未能造成伤害。', 'warn');
+        p.pending = emptyPending();
+      } else if (this.hasPending(p)) {
+        await this.resolvePending(p);
+      }
+      if (await this.checkDeaths()) return;
+      this.update();
     }
 
     hasPending(p) {
@@ -912,27 +957,14 @@
         this.fx('armorGain', { player: p.index, value: p.pending.armor, cardId: p.flags.lastArmorCardId });
       }
 
-      // 双叠甲：本回合第 2 张及之后的叠甲卡即时生成额外护盾
-      const armorThisTurn = p.flags.armorValuesThisTurn || [];
-      if (p.pending.armorValues.length && armorThisTurn.length >= 2) {
-        if (p.heroId === 'sanyueqi') {
-          this.log('「少女的特权」：三月七无法获得额外护甲。', 'skill');
-        } else {
-          const minVal = Math.min.apply(null, armorThisTurn);
-          if (minVal > p.extraShield) {
-            p.extraShield = minVal;
-            this.log('双甲成壁：额外护盾替换为 ' + minVal + ' 点（优先抵挡伤害，不可叠加）。', 'armor');
-            this.fx('extraShield', { player: p.index, value: minVal, cardId: p.flags.lastArmorCardId });
-          } else {
-            this.log('双甲成壁：额外护盾保持 ' + p.extraShield + ' 点。', 'armor');
-          }
-        }
-      }
-
-      // 伤害加成：浴血是「下一次伤害」，血祭在下回合开始时已转化
+      // 伤害加成：浴血是「下一次伤害」；血祭是「下回合所有伤害」的持续加成
+      const ranxueTurnBonus = p.flags.ranxueTurnBonus || 0;
       let bonus = p.flags.yuxueNextDamage || 0;
-      let breakDmg = p.pending.break;
-      let normalDmg = p.pending.normal;
+      let breakDmg = p.pending.break + (p.pending.break > 0 ? ranxueTurnBonus : 0);
+      let normalDmg = p.pending.normal + (p.pending.normal > 0 ? ranxueTurnBonus : 0);
+      if (ranxueTurnBonus > 0 && (p.pending.break > 0 || p.pending.normal > 0)) {
+        this.log('「血祭」伤害加成 +' + ranxueTurnBonus + ' 生效。', 'skill');
+      }
       if (bonus > 0 && breakDmg > 0) {
         breakDmg += bonus;
         this.log('伤害加成 +' + bonus + ' 生效。', 'skill');
@@ -1134,6 +1166,38 @@
       }
     }
 
+    /**
+     * 燃血行者的自伤：优先被额外护盾/普通护盾承受，溢出部分才扣生命。
+     * 返回实际吸收与扣血，便于技能后续按原始数值回复/蓄势。
+     */
+    async selfDamageThroughShield(p, amount) {
+      amount = Math.max(0, Math.floor(amount || 0));
+      if (this.state.over || amount <= 0 || p.hp <= 0) return { absorbed: 0, hpLoss: 0 };
+      const res = this.absorbShield(p, amount);
+      if (res.absorbed > 0) {
+        this.log(p.name + ' 的护盾承受了 ' + res.absorbed + ' 点自伤。', 'armor');
+        this.fx('armorHit', {
+          player: p.index,
+          value: res.absorbed,
+          remaining: this.totalShield(p),
+          cardId: p.flags.lastArmorCardId,
+        });
+      }
+      if (res.remaining > 0) {
+        this.log(p.name + ' 承受 ' + res.remaining + ' 点自伤。', 'damage');
+        await this.loseHp(p, res.remaining, { type: 'ranxue', bypass: true });
+        this.fx('hit', {
+          player: p.index,
+          type: 'true',
+          value: res.remaining,
+          absorbed: 0,
+          big: res.remaining >= 5,
+        });
+      }
+      this.update();
+      return { absorbed: res.absorbed, hpLoss: res.remaining };
+    }
+
     async heal(p, amount, opts) {
       opts = opts || {};
       if (this.state.over) return 0;
@@ -1220,10 +1284,9 @@
         this.log('「前瞻」：对方没有手牌可查看。', 'skill');
         return;
       }
-      const card = enemy.hand[Math.floor(this.rng() * enemy.hand.length)];
-      this.log('「前瞻」：' + p.name + ' 查看了 ' + enemy.name + ' 的一张手牌「' + this.cardDef(card).name + '」。', 'skill');
-      this.fx('peek', { player: p.index, card: card.def });
-      if (p.index === 0) await this.wait(500);
+      this.log('「前瞻」：' + p.name + ' 看到了 ' + enemy.name + ' 的全部手牌（' + enemy.hand.length + ' 张）。', 'skill');
+      this.fx('peekAll', { player: p.index, count: enemy.hand.length });
+      if (p.index === 0) await this.wait(300);
     }
 
     /* ---------------- 主动技能 ---------------- */
@@ -1254,6 +1317,7 @@
         if (s.id === 'meigui_delay') {
           if (p.flags.meiguiDelayed || p.flags.meiguiActive) { available = false; reason = '延授持续中'; }
           else if (p.played > 0) { available = false; reason = '出牌后不可发动'; }
+          else if (!p.hand.length) { available = false; reason = '手中没有可弃置的牌'; }
         }
         if (s.id === 'dutu_bet' && p.flags.dutuBetUsed) { available = false; reason = '本回合已下注'; }
         if (s.id === 'dutu_bet' && p.flags.dutuBetActive) { available = false; reason = '等待本回合出牌'; }
@@ -1317,8 +1381,7 @@
         else p.flags.ranxueBloodUsed = true;
         this.log('燃血行者发动「' + (skillId === 'ranxue_new' ? '新生' : '血祭') + '」，以「' + defc.name + '」自伤 ' + value + ' 点。', 'skill');
         this.fx('blood', { player: p.index, value });
-        await this.loseHp(p, value, { type: 'ranxue', bypass: true });
-        this.update();
+        await this.selfDamageThroughShield(p, value);
         if (await this.checkDeaths()) return true;
         if (skillId === 'ranxue_new') {
           this.log('「新生」：回复 ' + value + ' 点生命。', 'heal');
@@ -1350,13 +1413,37 @@
       }
 
       if (skillId === 'meigui_delay') {
-        if (p.played > 0) return false;
-        p.flags.meiguiArmed = true;
+        if (p.played > 0 || !p.hand.length || p.flags.meiguiDelayed) return false;
+        const candidates = p.hand.slice();
+        const pick = await this.ask(p, {
+          kind: 'card',
+          title: '延授 · 选择要弃置的牌',
+          desc: '弃置这张牌，将其效果延迟到下回合结束阶段。届时可直接发动，或继续延迟一回合并使数值 +2。',
+          cards: candidates,
+          default: candidates[0].uid,
+          allowCancel: true,
+        });
+        const selected = candidates.find((c) => c.uid === pick);
+        if (!selected || pick === false || pick === null) {
+          this.log('玫瑰老师取消了延授。', 'system');
+          return false;
+        }
+        const defc = this.cardDef(selected);
+        const removed = await this.removeFromHand(p, selected.uid, { skipCaptain: true });
+        if (!removed) return false;
+        p.discard.push(removed);
+        p.flags.meiguiDelayed = {
+          cardId: defc.id,
+          virtualDef: selected.def || null,
+          bonus: 0,
+          createdAtTurn: this.state.turnNumber,
+        };
         p.flags.meiguiActive = true;
         p.playLimit = 1;
-        this.log('「延授」：本回合只能打出 1 张牌，那张牌的效果将延迟到下回合。', 'skill');
-        this.fx('skill', { player: p.index, name: '延授' });
+        this.log('「延授」：弃置「' + defc.name + '」，本回合仅可再正常打出 1 张牌，其效果延迟到下回合结束阶段。', 'skill');
+        this.fx('delay', { player: p.index, card: defc });
         this.update();
+        await this.wait(260);
         return true;
       }
 
@@ -1493,6 +1580,13 @@
       this.update();
       await this.wait(300);
 
+      // 玫瑰老师「延授」在结束阶段发动/继续延迟
+      await this.resolveMeiguiDelay(p);
+      if (this.state.over) return;
+
+      // 本回合打出的护甲：若撑过对方下回合，下个自己回合开始时转化为额外护盾
+      this.recordSurvivalShield(p);
+
       // 回合结束清理
       p.noArmor = false;
       p.breakAsNormal = false;
@@ -1505,6 +1599,7 @@
         }
       }
       if (p.healLock > 0) p.healLock -= 1;
+      p.flags.ranxueTurnBonus = 0;
       p.pending = emptyPending();
       p.flags.dutuBetActive = false;
       this.update();
@@ -1512,13 +1607,6 @@
       if (this.state.over) return;
       const next = 1 - p.index;
       await this.beginTurn(next);
-    }
-
-    startTurnSkillCarry(p) {
-      if (p.flags._ranxueCarry) {
-        p.flags.ranxueNextBonus = (p.flags.ranxueNextBonus || 0) + p.flags._ranxueCarry;
-        p.flags._ranxueCarry = 0;
-      }
     }
 
     /* ---------------- 人类行动入口 ---------------- */
@@ -1601,8 +1689,6 @@
       await this.concludeTurn(p);
     }
 
-    // 在 beginTurn 中补上血祭 carry
-    _applyCarry(p) { this.startTurnSkillCarry(p); }
   }
 
   // patch beginTurn to apply carry at start
@@ -1612,8 +1698,8 @@
     if (p && p.flags && p.flags._ranxueCarry) {
       const carry = p.flags._ranxueCarry;
       p.flags._ranxueCarry = 0;
-      p.flags.yuxueNextDamage = (p.flags.yuxueNextDamage || 0) + carry;
-      this.log('「血祭」余温：' + p.name + ' 本回合第一次伤害 +' + carry + '。', 'skill');
+      p.flags.ranxueTurnBonus = (p.flags.ranxueTurnBonus || 0) + carry;
+      this.log('「血祭」余温：' + p.name + ' 本回合所有伤害 +' + carry + '。', 'skill');
     }
     return _origBeginTurn.call(this, pi);
   };

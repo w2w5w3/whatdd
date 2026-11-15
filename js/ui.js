@@ -1,5 +1,5 @@
 /* ============================================================
- * 烬契 · EMBER PACT
+ * 我的刀盾 · BLADE & SHIELD
  * ui.js — 界面、交互、动效与移动端体验
  * ============================================================ */
 (function (global) {
@@ -25,6 +25,7 @@
     sword: '<svg viewBox="0 0 24 24"><path d="M14 4l6 6-9 9-3 1 1-3 9-9z"/><path d="M4 20l5-5"/></svg>',
     flame: '<svg viewBox="0 0 24 24"><path d="M12 3c1.5 4-3 5.2-3 9a3 3 0 006 0c0-1.6-1-2.8-1-4 3 1.5 5 4 5 7a7 7 0 01-14 0c0-5 5-7 7-12z"/></svg>',
     info: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 10.5v6"/><circle cx="12" cy="7.2" r=".9" fill="currentColor" stroke="none"/></svg>',
+    eye: '<svg viewBox="0 0 24 24"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z"/><circle cx="12" cy="12" r="2.6"/></svg>',
   };
 
   // 攻击动画配置：颜色、刀光、冲击环、是否投射武器等均对应卡面风格
@@ -165,6 +166,8 @@
           this.useSkill(actionEl.dataset.skill);
         } else if (action === 'pile') {
           this.openPile(actionEl.dataset.pile);
+        } else if (action === 'peek-hand') {
+          this.openEnemyHandPeek();
         } else if (action === 'dismiss') {
           this.closeOverlay();
         }
@@ -283,7 +286,7 @@
       grid.innerHTML = CG.HEROES.map((h) => {
         const accent = h.accent || '#d5b371';
         return `<button class="hero-tile" data-hero-id="${esc(h.id)}" style="--accent:${accent}" aria-label="${esc(h.name)} · ${esc(h.title)}">
-          <img src="${esc(h.portrait)}" alt="" loading="lazy" draggable="false" />
+          <img src="${esc(h.portrait)}" alt="" draggable="false" />
           <span class="hero-tile__accent"></span>
           <span class="hero-tile__check">${ICONS.check}</span>
           <span class="hero-tile__meta">
@@ -503,14 +506,16 @@
       if (p.flags.wolfTurns > 0) push('狼化 +2伤 · ' + p.flags.wolfTurns + '回合', 'status-chip--purple');
       if (p.heroId === 'langren' && p.flags.wolfMode === 'a' && p.hp <= 8 && p.flags.wolfTurns <= 0) push('嗜血 +1伤', 'status-chip--bad');
       if (p.flags.yuxueNextDamage > 0) push('伤害 +' + p.flags.yuxueNextDamage, 'status-chip--bad');
-      if (p.flags.ranxueNextBonus > 0) push('血祭 +' + p.flags.ranxueNextBonus, 'status-chip--purple');
+      if (p.flags.ranxueTurnBonus > 0) push('血祭 +' + p.flags.ranxueTurnBonus + '伤害', 'status-chip--purple');
+      if (p.flags.ranxueNextBonus > 0) push('血祭蓄势 +' + p.flags.ranxueNextBonus, 'status-chip--purple');
       if (p.healLock > 0) push('禁疗', 'status-chip--bad');
       if (p.nextDrawPenalty > 0) push('少摸 1', 'status-chip--bad');
-      if (p.flags.meiguiDelayed) push('延授 +' + p.flags.meiguiDelayed.bonus + ' · 封存', 'status-chip--purple');
+      if (p.flags.meiguiDelayed) push('延授 +' + p.flags.meiguiDelayed.bonus + ' · 待发动', 'status-chip--purple');
       if (p.flags.dutuBetActive) push('已下注', 'status-chip--good');
       if (p.flags.destinyCard) push('命定 · ' + CG.CARD_MAP[p.flags.destinyCard].name, 'status-chip--purple');
       if (p.flags.poisonType && p.index === 0) push('毒咒 · ' + CG.TYPE_INFO[p.flags.poisonType].name, 'status-chip--purple');
       if (p.index === 1 && p.heroId === 'nvwu') push('毒咒已布', 'status-chip--purple');
+      if (p.index === 0 && p.heroId === 'yuyan') push('前瞻 · 全知', 'status-chip--good');
       if (p.heroId === 'sanyueqi' && (p.armor > 0 || p.extraShield > 0)) push('护甲反伤', 'status-chip--good');
       if (p.heroId === 'xunqing') push('同殇待发', 'status-chip--bad');
       if (p.flags.chensiyuUsed) push('摸三已用', '');
@@ -531,6 +536,18 @@
     enemyHand(p) {
       const count = p.hand.length;
       const show = Math.min(count, 8);
+      const reveal = this.game && this.game.players[0] && this.game.players[0].heroId === 'yuyan';
+      if (reveal) {
+        const cards = p.hand.slice(0, show).map((card) => {
+          const def = this.game.cardDef(card);
+          return `<img class="mini-face" src="${esc(def.img)}" alt="${esc(def.name)}" title="${esc(def.name)}" draggable="false" />`;
+        }).join('');
+        return `<button class="enemy-hand enemy-hand--revealed" data-action="peek-hand" aria-label="前瞻：查看对方全部 ${count} 张手牌" title="前瞻：查看对方全部手牌">
+          <span class="enemy-hand__stack">${cards}</span>
+          <span class="enemy-hand__count"><b>${count}</b> 手牌</span>
+          <span class="peek-eye" aria-hidden="true">${ICONS.eye}</span>
+        </button>`;
+      }
       let backs = '';
       for (let i = 0; i < show; i++) backs += `<span class="mini-back"></span>`;
       return `<div class="enemy-hand"><div class="enemy-hand__stack">${backs}</div><div class="enemy-hand__count"><b>${count}</b> 手牌</div></div>`;
@@ -679,7 +696,6 @@
         const remain = p.playLimit - p.played;
         let extra = '';
         if (p.flags.dutuBetActive) extra = ' · 已下注';
-        else if (p.flags.meiguiArmed) extra = ' · 延授 1 张';
         else if (p.noNingshen) extra = ' · 禁凝神';
         hint.innerHTML = `剩余 <b>${remain}</b> 张 · 双击出牌${extra}`;
       } else hint.innerHTML = '';
@@ -893,7 +909,7 @@
         }
       }
       const hints = [];
-      if (p.flags.meiguiArmed) hints.push('「延授」会封存这张牌的效果，延迟到下回合。');
+      if (p.flags.meiguiDelayed) hints.push('「延授」已延迟一张牌，将在下回合结束阶段选择发动。');
       if (p.flags.dutuBetActive) hints.push('已下注：出牌后将猜测牌库顶类型。');
       if (def.type === 'break' && game.totalShield(enemy) === 0 && p.breakAsNormal) hints.push('「绝杀」余势：可作为普通伤害牌打出。');
       if (p.heroId === 'sanyueqi' && def.type === 'armor') hints.push('「少女的特权」使护甲 +1。');
@@ -938,20 +954,23 @@
     cardCalc(def, p) {
       const game = this.game;
       const enemy = game.players[1];
-      const bonus = p.flags.wolfTurns > 0 ? 2 : 0;
+      const ranxueBonus = p.flags.ranxueTurnBonus || 0;
       if (def.type === 'armor') {
         let v = game.computeArmorValue(p, def.value, 0);
-        return `打出后立即获得 <b>${v}</b> 点护甲。${p.heroId === 'sanyueqi' ? '三月七无法获得额外护甲。' : '若本回合打出 2 张叠甲卡，立即获得额外护盾。'}`;
+        return `打出后立即获得 <b>${v}</b> 点护甲。${p.heroId === 'sanyueqi' ? '三月七无法获得额外护甲。' : '若到下个自己回合开始时护盾未被击碎，当前护甲全部转化为等量额外护盾，普通护甲清零；额外护盾在再下一个自己回合开始时消散。'}`;
       }
       if (def.type === 'break') {
         let v = game.computeBreakValue(p, def.value, 0);
         let t = `打出后立即造成 <b>${v}</b> 点破甲伤害（先削减护甲）。`;
+        if (ranxueBonus > 0) t += ` 血祭加成 +${ranxueBonus}，实际 ${v + ranxueBonus} 点。`;
         if (p.heroId === 'chuanxi' && enemy && enemy.armor >= 8) t += '「裂隙」将无视一半护甲。';
         return t;
       }
       if (def.type === 'damage') {
         let v = game.computeNormalValue(p, def.value, 0);
-        return `打出后立即造成 <b>${v}</b> 点普通伤害（目标须无护甲）。`;
+        let t = `打出后立即造成 <b>${v}</b> 点普通伤害（目标须无护甲）。`;
+        if (ranxueBonus > 0) t += ` 血祭加成 +${ranxueBonus}，实际 ${v + ranxueBonus} 点。`;
+        return t;
       }
       if (def.heal) return `恢复 <b>${def.heal}</b> 点生命。治疗不受职业被动与必杀影响。`;
       if (def.draw) {
@@ -1230,6 +1249,20 @@
       }
     },
 
+    openEnemyHandPeek() {
+      if (!this.game) return;
+      const me = this.game.players[0];
+      const enemy = this.game.players[1];
+      if (!me || !enemy || me.heroId !== 'yuyan') return;
+      const body = enemy.hand.length
+        ? `<p class="codex__intro">「前瞻」：对方当前全部手牌，共 <b style="color:var(--gold-2)">${enemy.hand.length}</b> 张。</p><div class="card-pick-grid">${enemy.hand.map((card) => {
+            const def = this.game.cardDef(card);
+            return `<div class="card-pick" title="${esc(def.name)}"><img src="${esc(def.img)}" alt="${esc(def.name)}" /><span class="card-pick__name">${esc(def.name)}</span></div>`;
+          }).join('')}</div>`
+        : '<div class="pile-empty">对方没有手牌</div>';
+      this.openModal({ title: '前瞻 · 对方手牌', eyebrow: 'FORESIGHT', body, dismissible: true, wide: true });
+    },
+
     openBattleLog() {
       if (!this.game) return;
       const logs = this.game.state.log;
@@ -1290,7 +1323,7 @@
         <button class="modal-tab ${this.codexTab === 'heroes' ? 'is-active' : ''}" data-codex-tab="heroes">职业图鉴</button>
       </div>`;
       this.openModal({
-        title: '烬契典籍',
+        title: '刀盾典籍',
         eyebrow: 'CODEX',
         desc: '一切契约，皆有代价。',
         codex: true,
@@ -1339,7 +1372,7 @@
         </div>
         <div class="rule-block"><h4>伤害与护甲</h4><ul>
           <li><b>破甲卡</b>：打出后立即先削护甲，溢出伤害扣血；对方无护甲时不可打出。</li>
-          <li><b>叠甲卡</b>：打出后立即增加护甲，只格挡破甲伤害。若一回合打出 2 张叠甲卡，第 2 张结算时立即获得较小数值的额外护盾；额外护盾不可叠加，更大数值会替换，并优先扣除。</li>
+          <li><b>叠甲卡</b>：打出后立即增加护甲，只格挡破甲伤害。若到下个自己回合开始时护盾未被击碎，当前护甲全部转化为等量额外护盾，普通护甲清零；额外护盾优先扣除，并在再下一个自己回合开始时消散。三月七无法获得额外护盾。</li>
           <li><b>普通伤害卡</b>：仅在对方无护甲时可打出，打出后立即扣血。</li>
           <li><b>休整卡</b>：回血或过牌立即生效，不增加护甲，不受职业被动与必杀影响。</li>
           <li>所有增减数值最低为 0，不会出现负收益。</li>
@@ -1415,6 +1448,7 @@
       const soundMap = {
         play: 'play', hit: data && data.big ? 'heavy' : 'hit', armorGain: 'armor', heal: 'heal',
         poison: 'poison', blood: 'hit', skill: 'skill', invalid: 'error', extraShield: 'armor',
+        extraShieldConvert: 'armor', extraShieldExpire: 'shieldBreak',
         counter: 'hit', revive: 'win', exhausted: 'poison', juesha: 'heavy', wolf: 'heavy',
         armorHit: 'shieldBreak', pierce: 'hit', delayFire: 'skill', betWin: 'skill', betFail: 'error',
       };
@@ -1456,6 +1490,17 @@
         this.showShieldCastFx(data.player, data.cardId);
         return;
       }
+      if (name === 'extraShieldConvert') {
+        const el = this.portraitOf(data.player);
+        if (el) this.floatText(el.getBoundingClientRect(), '余盾 +' + data.value, 'is-armor');
+        this.showShieldCastFx(data.player, data.cardId);
+        if (data.player === 0) this.toast('余盾：护盾未被击碎，转化为 ' + data.value + ' 点额外护盾', 'skill', 2400);
+        return;
+      }
+      if (name === 'extraShieldExpire') {
+        if (data.player === 0) this.toast('余盾：额外护盾消散', 'warn', 1800);
+        return;
+      }
       if (name === 'armorHit') {
         this.showShieldHitFx(data.player, data.cardId, data.remaining);
         return;
@@ -1495,8 +1540,12 @@
       if (name === 'revive') { this.showSplash('淬 炼 重 生', 'REVIVE'); this.toast('弃置 2 张手牌，复活回到 1 点生命', 'skill'); return; }
       if (name === 'swap') { this.showSplash('竭 泽', 'SWAP'); return; }
       if (name === 'delayFire') { this.showSplash('延 授 发 动', 'DELAYED'); return; }
-      if (name === 'delayWait') { this.toast('延授：此牌再 +3，下回合发动', 'skill'); return; }
+      if (name === 'delayWait') { this.toast('延授：此牌再 +2，下回合结束阶段发动', 'skill'); return; }
       if (name === 'invalid') { if (data && data.reason) this.toast(data.reason, 'danger', 1800); return; }
+      if (name === 'peekAll') {
+        if (data && data.player === 0) this.toast('前瞻 · 对方全部手牌已显示（' + data.count + ' 张）', 'skill', 2200);
+        return;
+      }
       if (name === 'peek') {
         if (data && data.player === 0 && data.card) this.toast('前瞻 · 对方手牌：「' + data.card.name + '」', 'skill', 2600);
         return;

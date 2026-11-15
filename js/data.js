@@ -1,5 +1,5 @@
 /* ============================================================
- * 烬契 · EMBER PACT
+ * 我的刀盾 · BLADE & SHIELD
  * data.js — 卡牌、职业与全局常量
  * 所有数值以本文件为唯一来源，UI 与引擎均从这里读取。
  * ============================================================ */
@@ -20,7 +20,7 @@
 
   CG.TYPE_INFO = {
     break: { name: '破甲', short: '破', color: '#ff6257', desc: '先削减护甲，溢出伤害扣血；对方无护甲时不可打出。' },
-    armor: { name: '叠甲', short: '甲', color: '#63b8ff', desc: '获得护甲，优先抵挡破甲伤害。' },
+    armor: { name: '叠甲', short: '甲', color: '#63b8ff', desc: '获得护甲，优先抵挡破甲伤害；护盾撑过对方回合后，当前护甲会转化为额外护盾。' },
     damage: { name: '普通伤害', short: '伤', color: '#ffb347', desc: '仅在对方无护甲时可打出，直接造成伤害。' },
     rest: { name: '休整', short: '息', color: '#7ee0a3', desc: '回血或过牌，不受职业被动与必杀影响。' },
   };
@@ -182,13 +182,13 @@
     },
     {
       id: 'ranxue', name: '燃血行者', title: '新生 / 血祭', hp: 20, accent: '#e13b55',
-      img: 'assets/heroes/ranxue.webp', portrait: 'assets/portraits/ranxue.webp',
+      img: 'assets/heroes/ranxue.webp?v=16', portrait: 'assets/portraits/ranxue.webp',
       passiveName: '新生 / 血祭',
-      passive: '每回合可各发动一次自伤：选择一张伤害牌，承受其数值的伤害且不消耗此牌；新生回复等额生命，血祭使下回合伤害 +（数值一半，向下取整）。',
+      passive: '每回合可各发动一次自伤：选择一张伤害牌，承受其数值的伤害（自伤可被自身护盾承受）且不消耗此牌；【新生】回复等额生命，【血祭】使下回合获得该数值一半（向下取整）的伤害加成。',
       tags: ['自伤', '蓄爆'], difficulty: 3,
       active: [
-        { id: 'ranxue_new', name: '新生', desc: '选择一张伤害牌：自伤其数值，然后回复等额生命。每回合限一次。', icon: '✚' },
-        { id: 'ranxue_blood', name: '血祭', desc: '选择一张伤害牌：自伤其数值，下回合获得一半数值的伤害加成。每回合限一次。', icon: '❖' },
+        { id: 'ranxue_new', name: '新生', desc: '选择一张伤害牌：自伤其数值（可被自身护盾承受），然后回复等额生命。每回合限一次。', icon: '✚' },
+        { id: 'ranxue_blood', name: '血祭', desc: '选择一张伤害牌：自伤其数值（可被自身护盾承受），下回合所有伤害获得一半数值的加成。每回合限一次。', icon: '❖' },
       ],
     },
     {
@@ -233,9 +233,9 @@
     },
     {
       id: 'yuyan', name: '预言家', title: '前瞻 / 命定', hp: 20, accent: '#96b7ff',
-      img: 'assets/heroes/yuyan.webp', portrait: 'assets/portraits/yuyan.webp',
+      img: 'assets/heroes/yuyan.webp?v=16', portrait: 'assets/portraits/yuyan.webp',
       passiveName: '前瞻 / 命定',
-      passive: '每回合开始查看对手 1 张手牌。限一次：对方摸牌前发动，决定其下一次摸到的牌；若其牌库已无此牌，则跳过摸牌。',
+      passive: '【前瞻】你可以看到对方的全部手牌。【命定】限一次：对方摸牌前可发动，决定其下一次摸到的牌；若其牌库已无你决定的牌，则视为其跳过摸牌。',
       tags: ['信息', '控制'], difficulty: 3,
       active: [{ id: 'yuyan_destiny', name: '命定', desc: '指定一张牌，成为对方下次摸到的牌；若不存在则对方跳过下次摸牌。限一次。', icon: '◈', once: true }],
     },
@@ -281,11 +281,11 @@
     },
     {
       id: 'meigui', name: '玫瑰老师', title: '延授', hp: 20, accent: '#ff6f91',
-      img: 'assets/heroes/meigui.webp', portrait: 'assets/portraits/meigui.webp',
+      img: 'assets/heroes/meigui.webp?v=16', portrait: 'assets/portraits/meigui.webp',
       passiveName: '延授',
-      passive: '发动后本回合只能打出 1 张牌，此牌效果延迟到下回合出牌阶段最后；届时可选择直接发动，或再等一回合使此牌 +3。延授持续期间不可重复发动。',
+      passive: '在还未打出卡牌时，选择一张手牌弃置，本回合仅可再正常打出 1 张牌；其效果延迟到下回合结束阶段。届时可直接发动，或继续延迟到下一回合结束阶段并使数值 +2。延授持续期间不可重复发动。',
       tags: ['延迟', '谋略'], difficulty: 3,
-      active: [{ id: 'meigui_delay', name: '延授', desc: '本回合只能打出 1 张牌，并将其效果延迟到下回合结算。', icon: '⧗' }],
+      active: [{ id: 'meigui_delay', name: '延授', desc: '未出牌时弃置 1 张手牌，本回合仅可再打出 1 张牌；其效果延迟到下回合结束阶段，可继续延迟一回合并使数值 +2。', icon: '⧗' }],
     },
     {
       id: 'dutu', name: '赌徒', title: '下注', hp: 20, accent: '#d9c66b',

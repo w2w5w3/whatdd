@@ -7,16 +7,31 @@
   <meta name="description" content="我的刀盾 · WDDD —— 一款使用角色与手牌进行回合制对决的卡牌对战游戏。" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <title>烬契 · EMBER PACT</title>
-  <link rel="icon" type="image/webp" href="assets/portraits/nailong.webp" />
+  <title>我的刀盾 · BLADE &amp; SHIELD</title>
+  <link rel="icon" type="image/png" href="assets/icons/icon-192.png?v=16" />
   <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="apple-touch-icon" href="assets/icons/icon-180.png" />
-  <meta name="apple-mobile-web-app-title" content="烬契" />
+  <link rel="apple-touch-icon" href="assets/icons/icon-180.png?v=16" />
+  <meta name="apple-mobile-web-app-title" content="我的刀盾" />
   <link rel="preload" as="image" href="assets/portraits/meigui.webp" />
   <link rel="preload" as="image" href="assets/cards/qingji.webp" />
   <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
+  <!-- ================= 启动加载 ================= -->
+  <div id="boot-loader" class="boot-loader" role="status" aria-live="polite" aria-label="正在加载游戏资源">
+    <div class="boot-loader__glow" aria-hidden="true"></div>
+    <div class="boot-loader__inner">
+      <div class="boot-loader__crest" aria-hidden="true"><span>刀</span><span>盾</span></div>
+      <h1 class="boot-loader__title">我的刀盾</h1>
+      <p class="boot-loader__subtitle">BLADE &amp; SHIELD</p>
+      <div class="boot-loader__track"><i id="boot-progress" class="boot-loader__bar"></i></div>
+      <div class="boot-loader__meta">
+        <span id="boot-status">正在筹备牌局…</span>
+        <b id="boot-percent">0%</b>
+      </div>
+    </div>
+  </div>
+
   <div id="app" class="app">
     <div class="ambient" aria-hidden="true">
       <div class="ambient__art" id="ambient-art"></div>
@@ -31,9 +46,9 @@
     <!-- ================= 主菜单 ================= -->
     <main id="screen-menu" class="screen screen--menu">
       <header class="menu-top">
-        <a class="brand-mini" href="#" aria-label="烬契首页">
-          <span class="brand-mark">烬</span>
-          <span class="brand-word">EMBER PACT</span>
+        <a class="brand-mini" href="#" aria-label="我的刀盾首页">
+          <span class="brand-mark">刀</span>
+          <span class="brand-word">BLADE &amp; SHIELD</span>
         </a>
         <div class="menu-top__right">
           <button class="icon-btn" id="btn-menu-rules" aria-label="玩法说明" title="玩法说明">
@@ -46,9 +61,9 @@
       <div class="menu-grid">
         <section class="menu-hero">
           <div class="eyebrow"><span class="eyebrow__line"></span><span>回合制 · 角色 · 卡牌</span></div>
-          <h1 class="game-title"><span>烬</span><span>契</span></h1>
-          <p class="game-subtitle">EMBER&nbsp;&nbsp;PACT</p>
-          <p class="game-tagline">以血为契，以牌为刃。<br />在余烬熄灭之前，击败你的对手。</p>
+          <h1 class="game-title game-title--four"><span class="title-prefix">我的</span><span class="title-main">刀盾</span></h1>
+          <p class="game-subtitle">BLADE&nbsp;&nbsp;&amp;&nbsp;&nbsp;SHIELD</p>
+          <p class="game-tagline">以刀为攻，以盾为守。<br />在一进一退之间，击败你的对手。</p>
           <div class="menu-stats">
             <div class="stat"><strong>24</strong><span>职业</span></div>
             <div class="stat"><strong>11</strong><span>卡牌</span></div>
@@ -68,7 +83,7 @@
         <aside class="menu-showcase" aria-hidden="true">
           <div class="showcase-frame">
             <div class="showcase-glow"></div>
-            <img class="showcase-card" src="assets/heroes/meigui.webp" alt="" draggable="false" />
+            <img class="showcase-card" src="assets/heroes/meigui.webp?v=16" alt="" draggable="false" />
             <div class="showcase-caption">
               <span class="showcase-caption__line"></span>
               <span>玫瑰老师 · 延授</span>
@@ -83,7 +98,7 @@
       </div>
 
       <footer class="menu-footer">
-        <span>v1.0.0 · 烬契</span>
+        <span>v1.0.0 · 我的刀盾</span>
         <span>建议开启声音游玩</span>
       </footer>
     </main>
@@ -140,7 +155,7 @@
           <button class="btn btn--ghost" id="btn-current-detail">职业详情</button>
           <button class="btn btn--ghost" id="btn-random-hero">随机<span class="hide-sm">当前职业</span></button>
           <button class="btn btn--primary btn--lg" id="btn-start-battle">
-            <span>踏入烬契</span>
+            <span>开始对战</span>
             <svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
           </button>
         </div>
@@ -155,7 +170,7 @@
             <button class="icon-btn" id="btn-battle-back" aria-label="暂停 / 退出">
               <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>
             </button>
-            <span class="battle-brand">烬契 <i>EMBER PACT</i></span>
+            <span class="battle-brand">我的刀盾 <i>BLADE &amp; SHIELD</i></span>
           </div>
           <div class="phase-track" id="phase-track" aria-label="回合阶段">
             <div class="phase-step" data-phase="draw"><b>01</b><span>摸牌</span></div>
