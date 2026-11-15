@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <meta name="theme-color" content="#0b0910" />
+  <meta name="description" content="我的刀盾 · WDDD —— 一款使用角色与手牌进行回合制对决的卡牌对战游戏。" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>烬契 · EMBER PACT</title>
+  <link rel="icon" type="image/webp" href="assets/portraits/nailong.webp" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="assets/icons/icon-180.png" />
+  <meta name="apple-mobile-web-app-title" content="烬契" />
+  <link rel="preload" as="image" href="assets/portraits/meigui.webp" />
+  <link rel="preload" as="image" href="assets/cards/qingji.webp" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div id="app" class="app">
+    <div class="ambient" aria-hidden="true">
+      <div class="ambient__art" id="ambient-art"></div>
+      <div class="ambient__veil"></div>
+      <div class="ambient__grain"></div>
+      <div class="ambient__vignette"></div>
+      <div class="ember ember--1"></div>
+      <div class="ember ember--2"></div>
+      <div class="ember ember--3"></div>
+    </div>
+
+    <!-- ================= 主菜单 ================= -->
+    <main id="screen-menu" class="screen screen--menu">
+      <header class="menu-top">
+        <a class="brand-mini" href="#" aria-label="烬契首页">
+          <span class="brand-mark">烬</span>
+          <span class="brand-word">EMBER PACT</span>
+        </a>
+        <div class="menu-top__right">
+          <button class="icon-btn" id="btn-menu-rules" aria-label="玩法说明" title="玩法说明">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 10.5v6"/><circle cx="12" cy="7.2" r=".9" fill="currentColor" stroke="none"/></svg>
+          </button>
+          <button class="icon-btn" id="btn-menu-sound" aria-label="声音开关" title="声音开关"></button>
+        </div>
+      </header>
+
+      <div class="menu-grid">
+        <section class="menu-hero">
+          <div class="eyebrow"><span class="eyebrow__line"></span><span>回合制 · 角色 · 卡牌</span></div>
+          <h1 class="game-title"><span>烬</span><span>契</span></h1>
+          <p class="game-subtitle">EMBER&nbsp;&nbsp;PACT</p>
+          <p class="game-tagline">以血为契，以牌为刃。<br />在余烬熄灭之前，击败你的对手。</p>
+          <div class="menu-stats">
+            <div class="stat"><strong>24</strong><span>职业</span></div>
+            <div class="stat"><strong>11</strong><span>卡牌</span></div>
+            <div class="stat"><strong>30</strong><span>牌库</span></div>
+            <div class="stat"><strong>2</strong><span>出牌</span></div>
+          </div>
+          <div class="menu-actions">
+            <button class="btn btn--primary btn--xl" id="btn-play">
+              <span>进入牌局</span>
+              <svg viewBox="0 0 24 24"><path d="M4 12h15M13 6l6 6-6 6"/></svg>
+            </button>
+            <button class="btn btn--ghost" id="btn-menu-codex">卡牌图鉴</button>
+          </div>
+          <p class="menu-note">单人对战 · 本地 AI · 适配移动端</p>
+        </section>
+
+        <aside class="menu-showcase" aria-hidden="true">
+          <div class="showcase-frame">
+            <div class="showcase-glow"></div>
+            <img class="showcase-card" src="assets/heroes/meigui.webp" alt="" draggable="false" />
+            <div class="showcase-caption">
+              <span class="showcase-caption__line"></span>
+              <span>玫瑰老师 · 延授</span>
+              <span class="showcase-caption__line"></span>
+            </div>
+          </div>
+          <div class="showcase-backback back-a"></div>
+          <div class="showcase-backback back-b"></div>
+          <div class="showcase-rune"></div>
+          <p class="showcase-verse">「让时间成为你的同谋。」</p>
+        </aside>
+      </div>
+
+      <footer class="menu-footer">
+        <span>v1.0.0 · 烬契</span>
+        <span>建议开启声音游玩</span>
+      </footer>
+    </main>
+
+    <!-- ================= 职业选择 ================= -->
+    <main id="screen-select" class="screen screen--select hidden">
+      <header class="sub-top">
+        <button class="btn btn--icon btn--ghost" id="btn-select-back" aria-label="返回主菜单">
+          <svg viewBox="0 0 24 24"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>
+          <span>返回</span>
+        </button>
+        <div class="sub-top__title">
+          <span class="eyebrow-mini">契约者</span>
+          <h2>选择你的职业</h2>
+        </div>
+        <button class="icon-btn" id="btn-select-rules" aria-label="玩法说明">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 10.5v6"/><circle cx="12" cy="7.2" r=".9" fill="currentColor" stroke="none"/></svg>
+        </button>
+      </header>
+
+      <div class="select-tabs" role="tablist" aria-label="选择阵营">
+        <button class="select-tab is-active" data-tab="player" role="tab" aria-selected="true">
+          <span class="tab-dot"></span> 我的职业
+          <em id="tab-player-name">—</em>
+        </button>
+        <button class="select-tab" data-tab="enemy" role="tab" aria-selected="false">
+          <span class="tab-dot"></span> 对手职业
+          <em id="tab-enemy-name">—</em>
+        </button>
+      </div>
+
+      <div class="select-body">
+        <section class="hero-grid-wrap">
+          <div class="hero-grid" id="hero-grid"></div>
+        </section>
+        <aside class="hero-detail" id="hero-detail"></aside>
+      </div>
+
+      <footer class="select-footer">
+        <div class="versus-bar">
+          <button class="versus-slot" id="slot-player" aria-label="查看我方职业">
+            <span class="versus-slot__label">我方</span>
+            <img id="slot-player-img" alt="" />
+            <span class="versus-slot__name" id="slot-player-name">—</span>
+          </button>
+          <span class="versus-mark">VS</span>
+          <button class="versus-slot" id="slot-enemy" aria-label="查看对手职业">
+            <span class="versus-slot__label">对手</span>
+            <img id="slot-enemy-img" alt="" />
+            <span class="versus-slot__name" id="slot-enemy-name">—</span>
+          </button>
+        </div>
+        <div class="select-footer__actions">
+          <button class="btn btn--ghost" id="btn-current-detail">职业详情</button>
+          <button class="btn btn--ghost" id="btn-random-hero">随机<span class="hide-sm">当前职业</span></button>
+          <button class="btn btn--primary btn--lg" id="btn-start-battle">
+            <span>踏入烬契</span>
+            <svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+          </button>
+        </div>
+      </footer>
+    </main>
+
+    <!-- ================= 战斗 ================= -->
+    <main id="screen-battle" class="screen screen--battle hidden">
+      <div class="battle" id="battle-root">
+        <header class="battle-top">
+          <div class="battle-top__left">
+            <button class="icon-btn" id="btn-battle-back" aria-label="暂停 / 退出">
+              <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>
+            </button>
+            <span class="battle-brand">烬契 <i>EMBER PACT</i></span>
+          </div>
+          <div class="phase-track" id="phase-track" aria-label="回合阶段">
+            <div class="phase-step" data-phase="draw"><b>01</b><span>摸牌</span></div>
+            <div class="phase-step" data-phase="play"><b>02</b><span>出牌</span></div>
+            <div class="phase-step" data-phase="resolve"><b>03</b><span>收尾</span></div>
+            <div class="turn-number" id="turn-number">第 1 回合</div>
+          </div>
+          <div class="battle-top__right">
+            <button class="icon-btn" id="btn-battle-log" aria-label="战斗记录">
+              <svg viewBox="0 0 24 24"><path d="M5 6h14M5 12h14M5 18h9"/></svg>
+            </button>
+            <button class="icon-btn" id="btn-battle-sound" aria-label="声音开关"></button>
+          </div>
+        </header>
+
+        <div class="battle-main">
+          <section class="combatant combatant--enemy" data-player="1" id="enemy-zone"></section>
+          <section class="arena" id="arena">
+            <div class="arena__rune" aria-hidden="true"></div>
+            <div class="arena__center" id="arena-center"></div>
+            <div class="battle-ticker" id="battle-ticker" role="log" aria-live="polite"></div>
+          </section>
+          <section class="combatant combatant--player" data-player="0" id="player-zone"></section>
+          <section class="hand-zone">
+            <div class="hand-tools">
+              <div class="piles" id="piles"></div>
+              <div class="hand-hint" id="hand-hint"></div>
+              <button class="btn btn--end" id="btn-end-turn"><span>结束回合</span><small>进入收尾</small></button>
+            </div>
+            <div class="hand-wrap">
+              <div class="hand-edge hand-edge--left"></div>
+              <div class="hand" id="hand" aria-label="手牌"></div>
+              <div class="hand-edge hand-edge--right"></div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <div id="fx-layer" class="fx-layer" aria-hidden="true"></div>
+  <div id="toast-layer" class="toast-layer" aria-live="polite"></div>
+  <div id="modal-layer" class="modal-layer hidden" role="presentation"></div>
+
+  <script src="js/data.js"></script>
+  <script src="js/audio.js"></script>
+  <script src="js/engine.js"></script>
+  <script src="js/ai.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
