@@ -482,6 +482,19 @@ h1, h2, h3, h4, p { margin: 0; }
 .combatant.has-shield.has-extra-shield {
   border-color: color-mix(in srgb, var(--shield-color, #6db8ff) 72%, transparent);
 }
+.fox-pet {
+  position: absolute; right: 9px; bottom: 5px; z-index: 3;
+  width: 36px; height: 44px; border-radius: 8px; overflow: hidden;
+  border: 1px solid rgba(242, 219, 167, 0.6); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55), 0 0 12px rgba(255, 179, 71, 0.18);
+  pointer-events: none; background: #1a1110;
+}
+.fox-pet img { width: 100%; height: 100%; object-fit: cover; }
+.fox-pet b {
+  position: absolute; right: 2px; bottom: 1px; min-width: 14px; height: 14px; padding: 0 3px;
+  display: grid; place-items: center; border-radius: 7px;
+  background: rgba(9, 7, 10, 0.85); color: var(--orange); font-family: var(--serif); font-size: 9px;
+}
+.combatant--enemy .fox-pet { right: auto; left: 55px; bottom: -4px; }
 .guard-aura {
   position: absolute; inset: 2px; z-index: 2; pointer-events: none; overflow: hidden;
   border-radius: 10px;
@@ -727,6 +740,9 @@ h1, h2, h3, h4, p { margin: 0; }
 .type-option__badge { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; background: var(--type-color); color: #140f0b; font-family: var(--serif); font-size: 15px; flex-shrink: 0; }
 .type-option strong { display: block; font-size: 13px; font-family: var(--serif); font-weight: 500; }
 .type-option span { color: var(--muted); font-size: 10px; }
+.deck-intel { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 8px; }
+.deck-intel span { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 6px 9px; border: 1px solid var(--line-soft); border-radius: 7px; background: rgba(255,255,255,0.025); font-size: 10px; color: var(--ink-soft); }
+.deck-intel i { font-style: normal; color: var(--gold-2); font-family: var(--serif); font-size: 13px; }
 .card-pick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(94px, 1fr)); gap: 9px; }
 .card-pick { position: relative; aspect-ratio: 2 / 3; border-radius: 7px; overflow: hidden; border: 1px solid rgba(255, 255, 255, 0.1); background: #15101a; transition: 0.2s; }
 .card-pick img { width: 100%; height: 100%; object-fit: cover; }

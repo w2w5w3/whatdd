@@ -1,5 +1,5 @@
 /* 我的刀盾 · 离线缓存（仅在 HTTPS 下注册） */
-const CACHE = 'ember-pact-v5';
+const CACHE = 'ember-pact-v6';
 const CORE = [
   './',
   './index.html',

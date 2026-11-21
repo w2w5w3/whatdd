@@ -295,12 +295,52 @@
       tags: ['赌博', '上限'], difficulty: 3,
       active: [{ id: 'dutu_bet', name: '下注', desc: '本回合下一次出牌前猜测牌库顶类型；猜中追加 1/2 结算，猜错此牌无效。', icon: '♠' }],
     },
+    {
+      id: 'dengliren', name: '点灯人', title: '极耀', hp: 20, accent: '#8fe3b0',
+      img: 'assets/heroes/dengliren.webp?v=18', portrait: 'assets/portraits/dengliren.webp?v=18',
+      passiveName: '极耀',
+      passive: '限一次：闪瞎对方，使其下一回合无法出牌。',
+      tags: ['控制', '致盲'], difficulty: 2,
+      active: [{ id: 'dengliren_glare', name: '极耀', desc: '限一次：让对手下一回合无法打出卡牌。', icon: '☀', once: true }],
+    },
+    {
+      id: 'shengnv', name: '圣女', title: '赐福', hp: 20, accent: '#f0d58a',
+      img: 'assets/heroes/shengnv.webp?v=18', portrait: 'assets/portraits/shengnv.webp?v=18',
+      passiveName: '赐福',
+      passive: '你打出非伤害牌时，可选择将其赐福给对方；若如此做，你所有非伤害牌的数值永久 +1（可叠加）。',
+      tags: ['辅助', '成长'], difficulty: 3,
+      active: [],
+    },
+    {
+      id: 'heike', name: '低调黑客', title: '骇入', hp: 20, accent: '#5fe08c',
+      img: 'assets/heroes/heike.webp?v=18', portrait: 'assets/portraits/heike.webp?v=18',
+      passiveName: '骇入',
+      passive: '你可以看到对方手牌与牌库剩余牌数；对方摸牌时你能看到其中一张。出牌阶段可消耗一次出牌机会，选择对方一张手牌并猜测；猜对则将其移入我方手牌并自动打出（不消耗出牌次数）。',
+      tags: ['信息', '偷牌'], difficulty: 3,
+      active: [{ id: 'heike_hack', name: '骇入', desc: '消耗 1 次出牌机会：选择对方一张手牌并猜测。猜对后该牌移入我方手牌并自动打出，不消耗额外出牌次数。', icon: '⌁' }],
+    },
+    {
+      id: 'pojie', name: '破壁人', title: '破垒', hp: 20, accent: '#ff5b52',
+      img: 'assets/heroes/pojie.webp?v=18', portrait: 'assets/portraits/pojie.webp?v=18',
+      passiveName: '破垒',
+      passive: '你击碎对方护甲时，额外造成 1 点伤害并摸 1 张牌。',
+      tags: ['破甲', '追击'], difficulty: 2,
+      active: [],
+    },
+    {
+      id: 'xunlianshi', name: '训练师', title: '培育', hp: 20, accent: '#ffb347',
+      img: 'assets/heroes/xunlianshi.webp?v=18', portrait: 'assets/portraits/xunlianshi.webp?v=18',
+      passiveName: '培育',
+      passive: '开局召唤火狐狸：每回合结束阶段对对方造成 1 点伤害（优先破甲）；结束阶段可连续投喂手牌，每投喂 1 张使其本局伤害永久 +1。',
+      tags: ['召唤', '成长'], difficulty: 2,
+      active: [],
+    },
   ];
 
   CG.HERO_MAP = Object.fromEntries(CG.HEROES.map((h) => [h.id, h]));
   CG.HERO_BY_NAME = Object.fromEntries(CG.HEROES.map((h) => [h.name, h]));
 
-  /* 正式对局可用职业（24 位；23 号在原设定中缺失，美术中的圣女保留为素材） */
+  /* 正式对局可用职业（29 位） */
   CG.PLAYABLE_HERO_IDS = CG.HEROES.map((h) => h.id);
 
   CG.DECK_LIST = CG.CARDS.map((c) => ({ id: c.id, name: c.name, count: c.count, type: c.type }));

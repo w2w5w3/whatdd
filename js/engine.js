@@ -1,6 +1,6 @@
 /* ============================================================
  * 我的刀盾 · BLADE & SHIELD
- * engine.js — 回合、卡牌、护甲、伤害与 24 职业规则引擎
+ * engine.js — 回合、卡牌、护甲、伤害与 29 职业规则引擎
  * 无 DOM 依赖，可单独在 Node 中运行测试。
  * ============================================================ */
 (function (global) {
@@ -53,6 +53,12 @@
       armorValuesThisTurn: [],
       survivalShield: null,
       extraShieldExpireTurn: 0,
+      denglirenUsed: false,
+      blinded: false,
+      blindedTurn: false,
+      blessingBonus: 0,
+      foxDamage: 1,
+      foxFed: 0,
     };
   }
 
@@ -198,6 +204,12 @@
       await this.wait(300);
       await this.setupHeroChoices();
       if (this.state.over) return;
+      this.players.forEach((p) => {
+        if (p.heroId === 'xunlianshi') {
+          this.log('「培育」：' + p.name + ' 召唤了火狐狸（每回合结束阶段造成 1 点破甲伤害）。', 'skill');
+          this.fx('summon', { player: p.index });
+        }
+      });
       this.update();
       await this.beginTurn(0);
     }
@@ -292,6 +304,12 @@
       this.state.lastAction = '';
       p.played = 0;
       p.playLimit = CG.RULES.playPerTurn;
+      p.flags.blindedTurn = false;
+      if (p.flags.blinded) {
+        p.flags.blinded = false;
+        p.flags.blindedTurn = true;
+        p.playLimit = 0;
+      }
       p.pending = emptyPending();
       p.flags.ranxueNewUsed = false;
       p.flags.ranxueBloodUsed = false;
@@ -312,6 +330,10 @@
       this.busy = true;
       this.awaitingHuman = false;
       this.log('—— 第 ' + this.state.turnNumber + ' 回合 · ' + p.name + ' ——', 'turn');
+      if (p.flags.blindedTurn) {
+        this.log('「极耀」：' + p.name + ' 被强光闪瞎，本回合无法打出卡牌。', 'warn');
+        this.fx('blind', { player: p.index });
+      }
       this.update();
       await this.wait(420);
 
@@ -519,6 +541,12 @@
         }
         await this.wait(120);
       }
+      const hacker = this.other(p);
+      if (out.length && hacker && hacker.heroId === 'heike' && hacker.index === 0) {
+        const peeked = out[Math.floor(this.rng() * out.length)];
+        this.log('「骇入」：你看到对方摸到了「' + this.cardDef(peeked).name + '」。', 'skill');
+        this.fx('hackDraw', { player: hacker.index, card: this.cardDef(peeked) });
+      }
       this.update();
       return out;
     }
@@ -591,13 +619,14 @@
       return Math.max(0, v);
     }
 
-    playability(p, card) {
+    playability(p, card, opts) {
+      opts = opts || {};
       const def = this.cardDef(card);
       if (this.state.over) return { ok: false, reason: '对局已结束' };
       if (this.state.phase !== 'play') return { ok: false, reason: '当前不是出牌阶段' };
       if (this.state.current !== p.index) return { ok: false, reason: '当前不是你的回合' };
       if (p.hp <= 0) return { ok: false, reason: '你已倒下' };
-      if (p.played >= p.playLimit) return { ok: false, reason: '本回合出牌次数已用尽' };
+      if (!opts.free && p.played >= p.playLimit) return { ok: false, reason: '本回合出牌次数已用尽' };
       const enemy = this.other(p);
       if (!enemy) return { ok: false, reason: '没有目标' };
 
@@ -626,19 +655,35 @@
       if (this.state.over) return false;
       const card = p.hand.find((c) => c.uid === uid);
       if (!card) return false;
-      const check = this.playability(p, card);
+      const check = this.playability(p, card, { free: !!opts.free });
       if (!check.ok) {
         this.log(check.reason, 'warn');
         this.fx('invalid', { reason: check.reason });
         return false;
       }
       const def = this.cardDef(card);
+      const enemy = this.other(p);
+      let blessTarget = null;
+      if (p.heroId === 'shengnv' && (def.type === 'armor' || def.type === 'rest')) {
+        const pick = await this.ask(p, {
+          kind: 'choose',
+          title: '赐福 · 选择这张牌的目标',
+          desc: '将这张非伤害牌赐福给对方，目标会承受它的效果；如此做后，你所有非伤害牌数值永久 +1（可叠加）。',
+          options: [
+            { value: 'self', label: '自己使用', desc: '按正常规则对自己生效，不触发赐福成长。' },
+            { value: 'enemy', label: '赐福对方', desc: '让对方获得这张牌的效果，并使你的非伤害牌数值 +1。' },
+          ],
+          default: 'self',
+        });
+        if (pick === 'enemy') blessTarget = enemy;
+      }
 
       // 船长失去手牌
       const removed = await this.removeFromHand(p, uid);
       if (!removed) return false;
-      p.played += 1;
+      if (!opts.free) p.played += 1;
       this.state.stats.cardsPlayed[p.index] += 1;
+      if (opts.fromHack) this.log(p.name + ' 自动打出骇入获得的「' + def.name + '」，不消耗出牌次数。', 'skill');
 
       const variant = await this.resolvePlayVariant(p, def, opts);
       let betResult = null;
@@ -663,6 +708,21 @@
       }
 
       if (effective) {
+        if (blessTarget) {
+          await this.applyBlessing(p, def, blessTarget);
+          p.flags.blessingBonus = (p.flags.blessingBonus || 0) + 1;
+          this.log('「赐福」：' + p.name + ' 将「' + def.name + '」赐福给 ' + blessTarget.name + '，此后所有非伤害牌数值 +1（当前 +' + p.flags.blessingBonus + '）。', 'skill');
+          this.fx('bless', { player: p.index, target: blessTarget.index, value: p.flags.blessingBonus });
+          if (await this.checkDeaths()) {
+            p.discard.push(card);
+            this.update();
+            return true;
+          }
+          p.discard.push(card);
+          this.update();
+          await this.wait(220);
+          return true;
+        }
         await this.applyCardEffect(p, def, {
           variant,
           bonus: 0,
@@ -771,6 +831,29 @@
       };
     }
 
+    async applyBlessing(p, def, target) {
+      const bonus = p.flags.blessingBonus || 0;
+      if (def.type === 'armor') {
+        const value = this.computeArmorValue(p, def.value, bonus);
+        target.armor += value;
+        target.flags.lastArmorCardId = def.id;
+        this.log('「赐福」：' + target.name + ' 获得 ' + value + ' 点护甲。', 'armor');
+        this.fx('armorGain', { player: target.index, value, cardId: def.id });
+      } else if (def.type === 'rest') {
+        if (def.heal) {
+          const value = Math.max(0, def.heal + bonus);
+          this.log('「赐福」：' + target.name + ' 回复 ' + value + ' 点生命。', 'heal');
+          await this.heal(target, value, { source: 'card' });
+        }
+        if (def.draw) {
+          const count = Math.max(0, def.draw + bonus);
+          this.log('「赐福」：' + target.name + ' 摸 ' + count + ' 张牌。', 'draw');
+          await this.drawCards(target, count);
+        }
+      }
+      this.update();
+    }
+
     async applyCardEffect(p, def, opts) {
       opts = opts || {};
       const scale = opts.scale === undefined ? 1 : opts.scale;
@@ -779,8 +862,9 @@
       const enemy = this.other(p);
       const isExtra = !!opts.isExtra;
 
+      const blessBonus = p.heroId === 'shengnv' ? (p.flags.blessingBonus || 0) : 0;
       if (def.type === 'armor') {
-        const value = this.computeArmorValue(p, def.value, bonus);
+        const value = this.computeArmorValue(p, def.value, bonus + blessBonus);
         const scaled = Math.max(0, Math.floor(value * scale));
         p.pending.armor += scaled;
         p.pending.label = def.name;
@@ -827,7 +911,7 @@
       if (def.type === 'rest') {
         if (def.heal) {
           if (p.heroId === 'dunai' && variant.healMode === 'curse') {
-            let value = Math.floor((def.heal + bonus) * scale);
+            let value = Math.floor((def.heal + bonus + blessBonus) * scale);
             this.log('「腐乳」：' + def.name + ' 化为诅咒，对 ' + enemy.name + ' 造成 ' + value + ' 点真实伤害。', 'poison');
             this.fx('poison', { player: enemy.index, card: def });
             await this.dealDamage(enemy, value, 'true', { source: p, isSkill: true, isReflect: true });
@@ -837,13 +921,13 @@
             }
             if (await this.checkDeaths()) return;
           } else {
-            const value = Math.floor((def.heal + bonus) * scale);
+            const value = Math.floor((def.heal + bonus + blessBonus) * scale);
             await this.heal(p, value, { source: 'card' });
           }
           return;
         }
         if (def.draw) {
-          let count = Math.floor((def.draw + bonus) * scale);
+          let count = Math.floor((def.draw + bonus + blessBonus) * scale);
           if (p.heroId === 'chensiyu') count += Math.floor(1 * scale);
           if (p.heroId === 'kuaishou' && variant.ningshenMode === 'steal') {
             const stealCount = Math.max(1, Math.floor(2 * scale));
@@ -884,6 +968,44 @@
      * 玫瑰老师「延授」：弃置的牌在下一回合结束阶段发动。
      * 届时可直接发动，或再延迟一回合并使数值 +2。
      */
+    async trainerEndPhase(p) {
+      if (this.state.over || p.heroId !== 'xunlianshi' || p.hp <= 0) return;
+      const enemy = this.other(p);
+      if (!enemy) return;
+
+      // 玩家可在结束阶段连续投喂手牌（AI 简化处理：不投喂）
+      let feedGuard = 0;
+      while (p.index === 0 && p.hand.length && feedGuard++ < 12) {
+        const pick = await this.ask(p, {
+          kind: 'card',
+          title: '火狐狸 · 投喂手牌',
+          desc: '可投喂手牌，使火狐狸本局伤害永久 +1；可连续投喂，点“跳过”开始攻击。',
+          cards: p.hand.slice(),
+          default: null,
+          allowCancel: true,
+        });
+        const card = p.hand.find((c) => c.uid === pick);
+        if (!card) break;
+        const removed = await this.removeFromHand(p, card.uid, { skipCaptain: true });
+        if (!removed) break;
+        p.discard.push(removed);
+        p.flags.foxDamage = (p.flags.foxDamage || 1) + 1;
+        p.flags.foxFed = (p.flags.foxFed || 0) + 1;
+        this.log('「培育」：投喂「' + this.cardDef(removed).name + '」，火狐狸本局伤害永久 +1（当前 ' + p.flags.foxDamage + '）。', 'skill');
+        this.fx('foxFeed', { player: p.index, value: p.flags.foxDamage, card: this.cardDef(removed) });
+        this.update();
+        await this.wait(220);
+      }
+
+      const damage = p.flags.foxDamage || 1;
+      this.log('「培育」：火狐狸扑向 ' + enemy.name + '，造成 ' + damage + ' 点伤害。', 'damage');
+      this.fx('fox', { player: p.index, target: enemy.index, value: damage });
+      await this.dealDamage(enemy, damage, 'break', { source: p, isSkill: true, fromSummon: true });
+      if (await this.checkDeaths()) return;
+      this.update();
+      await this.wait(220);
+    }
+
     async resolveMeiguiDelay(p) {
       if (this.state.over || p.heroId !== 'meigui' || !p.flags.meiguiDelayed) return;
       const delay = p.flags.meiguiDelayed;
@@ -1065,6 +1187,20 @@
         big: hpDamage >= 8, source: source ? source.index : null,
       });
       this.update();
+
+      // 破壁人「破垒」：击碎护甲后追加 1 点伤害并摸 1 张牌
+      if (
+        type === 'break' && opts.fromCard && source && source.heroId === 'pojie' &&
+        source.hp > 0 && !opts.isReflect && guardBefore && this.totalShield(target) === 0
+      ) {
+        this.log('「破垒」：击碎 ' + target.name + ' 的护甲，追加 1 点伤害并摸 1 张牌。', 'skill');
+        this.fx('pojie', { player: source.index, target: target.index });
+        await this.dealDamage(target, 1, 'true', {
+          source, isSkill: true, fromTrait: true, skipXunqing: true,
+        });
+        if (!this.state.over) await this.drawCards(source, 1);
+        if (await this.checkDeaths()) return { hpDamage, absorbed };
+      }
 
       // 三月七：护甲未碎反伤
       if (
@@ -1290,6 +1426,60 @@
     }
 
     /* ---------------- 主动技能 ---------------- */
+    async activateHack(p) {
+      const enemy = this.other(p);
+      if (!enemy || !enemy.hand.length || p.played >= p.playLimit) return false;
+      const hidden = enemy.hand.slice();
+      const pick = await this.ask(p, {
+        kind: 'card',
+        hidden: true,
+        title: '骇入 · 选择对方一张手牌',
+        desc: '对方手牌以牌背展示。选择一张后，猜测它的具体牌名；猜对就能据为己有并自动打出。',
+        cards: hidden,
+        default: hidden[0].uid,
+        allowCancel: true,
+      });
+      const targetCard = hidden.find((c) => c.uid === pick);
+      if (!targetCard) {
+        this.log('黑客取消了骇入。', 'system');
+        return false;
+      }
+
+      // 消耗一次出牌机会；猜中后的自动打出不消耗
+      p.played += 1;
+      this.log('「骇入」消耗一次出牌机会，锁定对方一张手牌。', 'skill');
+      this.update();
+
+      const guess = await this.ask(p, {
+        kind: 'cardId',
+        title: '骇入 · 猜测这张牌',
+        desc: '选择你猜测的牌名。猜对后，这张牌会移入你的手牌并自动打出。',
+        cardIds: CG.CARDS.map((c) => c.id),
+        default: 'kuaizhan',
+      });
+      const actual = this.cardDef(targetCard);
+      if (guess !== actual.id) {
+        this.log('「骇入」猜错了，对方那张手牌没有变化。', 'warn');
+        this.fx('hackFail', { player: p.index });
+        this.update();
+        return true;
+      }
+
+      const removed = await this.removeFromHand(enemy, targetCard.uid, { skipCaptain: false });
+      if (!removed) return true;
+      await this.gainCard(p, removed, { source: 'hack' });
+      this.log('「骇入」猜中「' + actual.name + '」！该牌移入你的手牌，并自动打出。', 'skill');
+      this.fx('hackSuccess', { player: p.index, card: actual });
+      this.update();
+      await this.wait(220);
+
+      const played = await this.playCard(p, removed.uid, { free: true, fromHack: true });
+      if (!played) {
+        this.log('「骇入」获得的「' + actual.name + '」当前无法自动打出，保留在手牌。', 'warn');
+      }
+      return true;
+    }
+
     activeSkillDefs(p) {
       const out = [];
       const hero = p.hero;
@@ -1314,6 +1504,11 @@
           if (!has) { available = false; reason = '手中没有伤害牌'; }
         }
         if (s.id === 'yuyan_destiny' && p.flags.destinyUsed) { available = false; reason = '本局已发动'; }
+        if (s.id === 'dengliren_glare' && p.flags.denglirenUsed) { available = false; reason = '本局已发动'; }
+        if (s.id === 'heike_hack') {
+          if (!this.other(p).hand.length) { available = false; reason = '对方没有手牌'; }
+          else if (p.played >= p.playLimit) { available = false; reason = '出牌次数已用尽'; }
+        }
         if (s.id === 'meigui_delay') {
           if (p.flags.meiguiDelayed || p.flags.meiguiActive) { available = false; reason = '延授持续中'; }
           else if (p.played > 0) { available = false; reason = '出牌后不可发动'; }
@@ -1338,6 +1533,20 @@
       if (state && !state.available) {
         this.log('技能不可用：' + state.reason, 'warn');
         return false;
+      }
+
+      if (skillId === 'dengliren_glare') {
+        p.flags.denglirenUsed = true;
+        const enemy = this.other(p);
+        enemy.flags.blinded = true;
+        this.log('「极耀」：' + p.name + ' 点亮强光，' + enemy.name + ' 下回合无法打出卡牌。', 'skill');
+        this.fx('glare', { player: p.index, target: enemy.index });
+        this.update();
+        return true;
+      }
+
+      if (skillId === 'heike_hack') {
+        return await this.activateHack(p);
       }
 
       if (skillId === 'chensiyu_draw3') {
@@ -1584,6 +1793,10 @@
       await this.resolveMeiguiDelay(p);
       if (this.state.over) return;
 
+      // 训练师：火狐狸在结束阶段攻击（先投喂，再结算）
+      await this.trainerEndPhase(p);
+      if (this.state.over) return;
+
       // 本回合打出的护甲：若撑过对方下回合，下个自己回合开始时转化为额外护盾
       this.recordSurvivalShield(p);
 
@@ -1599,6 +1812,7 @@
         }
       }
       if (p.healLock > 0) p.healLock -= 1;
+      p.flags.blindedTurn = false;
       p.flags.ranxueTurnBonus = 0;
       p.pending = emptyPending();
       p.flags.dutuBetActive = false;

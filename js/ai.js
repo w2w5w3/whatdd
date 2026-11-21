@@ -220,6 +220,10 @@
       await game.activateSkill(p, 'yuyan_destiny');
       await game.wait(260);
     }
+    if (findSkill('dengliren_glare')?.available) {
+      await game.activateSkill(p, 'dengliren_glare');
+      await game.wait(260);
+    }
     if (findSkill('ranxue_blood')?.available && p.hp > 11 && enemyOf(game, p).hp > 6) {
       await game.activateSkill(p, 'ranxue_blood');
       await game.wait(260);
