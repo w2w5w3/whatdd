@@ -141,6 +141,11 @@
     }
 
     if (spec.kind === 'choose') {
+      if (title.includes('赐福')) {
+        const card = spec.card || {};
+        if (card.heal && enemy && enemy.hp >= enemy.maxHp) return 'enemy';
+        return 'self';
+      }
       if (title.includes('腐乳')) {
         if (p.hp <= p.maxHp - 4) return 'heal';
         if (enemy && enemy.hp <= 8) return 'curse';
@@ -169,6 +174,10 @@
         const sorted = cards.slice().sort((a, b) => valueOf(game, p, b) - valueOf(game, p, a));
         return sorted[0].uid;
       }
+      if (title.includes('投喂')) {
+        const sorted = cards.slice().sort((a, b) => valueOf(game, p, a) - valueOf(game, p, b));
+        return sorted[0].uid;
+      }
       if (title.includes('开拓')) {
         const sorted = cards.slice().sort((a, b) => valueOf(game, p, b) - valueOf(game, p, a));
         return sorted[0].uid;
@@ -184,6 +193,10 @@
     }
 
     if (spec.kind === 'cardId') {
+      if (title.includes('骇入')) {
+        const ids = spec.cardIds || [];
+        return ids.length ? ids[Math.floor(game.rng() * ids.length)] : 'kuaizhan';
+      }
       if (title.includes('命定')) return 'kuaizhan';
       if (title.includes('毒咒')) return 'kuaizhan';
       return spec.default || 'kuaizhan';
@@ -222,6 +235,10 @@
     }
     if (findSkill('dengliren_glare')?.available) {
       await game.activateSkill(p, 'dengliren_glare');
+      await game.wait(260);
+    }
+    if (findSkill('heike_hack')?.available && p.played < p.playLimit && enemyOf(game, p).hand.length) {
+      await game.activateSkill(p, 'heike_hack');
       await game.wait(260);
     }
     if (findSkill('ranxue_blood')?.available && p.hp > 11 && enemyOf(game, p).hp > 6) {

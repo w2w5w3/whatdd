@@ -168,6 +168,8 @@
           this.openPile(actionEl.dataset.pile);
         } else if (action === 'peek-hand') {
           this.openEnemyHandPeek();
+        } else if (action === 'fox-info') {
+          this.openFoxInfo(Number(actionEl.dataset.player));
         } else if (action === 'dismiss') {
           this.closeOverlay();
         }
@@ -477,12 +479,12 @@
           <div class="guard-row">
             <span class="guard guard--armor" style="${armor ? '' : 'opacity:.42'}" title="护甲">${ICONS.shield}${armor}</span>
             ${extra > 0 ? `<span class="guard guard--extra" title="额外护盾，优先扣除">${ICONS.spark}额外 ${extra}</span>` : ''}
+            ${p.heroId === 'xunlianshi' ? `<button class="fox-chip" data-action="fox-info" data-player="${p.index}" title="查看火狐狸详情"><img src="assets/summons/huohuli.webp" alt="火狐狸" draggable="false" /><b>${p.flags.foxDamage || 1}</b></button>` : ''}
             ${statuses}
           </div>
           ${skills ? `<div class="combatant__skills-row"><div class="skill-dock">${skills}</div></div>` : ''}
         </div>
         ${handBacks}
-        ${p.heroId === 'xunlianshi' ? `<div class="fox-pet" title="火狐狸：本局伤害 ${p.flags.foxDamage || 1}"><img src="assets/summons/huohuli.webp" alt="火狐狸" draggable="false" /><b>${p.flags.foxDamage || 1}</b></div>` : ''}
         ${hasShield ? `<div class="guard-aura" aria-hidden="true"></div>` : ''}
       `;
     },
@@ -519,8 +521,8 @@
       if (p.index === 0 && p.heroId === 'yuyan') push('前瞻 · 全知', 'status-chip--good');
       if (p.index === 0 && p.heroId === 'heike') push('骇入 · 情报', 'status-chip--good');
       if (p.heroId === 'shengnv' && p.flags.blessingBonus > 0) push('赐福 +' + p.flags.blessingBonus, 'status-chip--good');
-      if (p.heroId === 'xunlianshi') push('火狐狸 · 伤害 ' + (p.flags.foxDamage || 1), 'status-chip--purple');
       if (p.flags.blindedTurn) push('致盲 · 禁牌', 'status-chip--bad');
+      if (p.heroId === 'suyu' && p.flags.suyuAwakened) push('静息 · 回复2', 'status-chip--good');
       if (p.heroId === 'sanyueqi' && (p.armor > 0 || p.extraShield > 0)) push('护甲反伤', 'status-chip--good');
       if (p.heroId === 'xunqing') push('同殇待发', 'status-chip--bad');
       if (p.flags.chensiyuUsed) push('摸三已用', '');
@@ -541,7 +543,9 @@
     enemyHand(p) {
       const count = p.hand.length;
       const show = Math.min(count, 8);
-      const reveal = this.game && this.game.players[0] && ['yuyan', 'heike'].includes(this.game.players[0].heroId);
+      const viewer = this.game && this.game.players[0];
+      const reveal = viewer && viewer.heroId === 'yuyan';
+      const intel = viewer && viewer.heroId === 'heike';
       if (reveal) {
         const cards = p.hand.slice(0, show).map((card) => {
           const def = this.game.cardDef(card);
@@ -555,7 +559,7 @@
       }
       let backs = '';
       for (let i = 0; i < show; i++) backs += `<span class="mini-back"></span>`;
-      return `<div class="enemy-hand"><div class="enemy-hand__stack">${backs}</div><div class="enemy-hand__count"><b>${count}</b> 手牌</div></div>`;
+      return `<div class="enemy-hand"><div class="enemy-hand__stack">${backs}</div><div class="enemy-hand__count"><b>${count}</b> 手牌</div>${intel ? `<button class="peek-eye peek-eye--btn" data-action="peek-hand" aria-label="查看对方牌库情报" title="骇入：查看对方牌库剩余数量">${ICONS.eye}</button>` : ''}</div>`;
     },
 
     renderArena() {
@@ -1263,18 +1267,39 @@
       }
     },
 
+    openFoxInfo(playerIndex) {
+      if (!this.game) return;
+      const p = this.game.players[playerIndex] || this.game.players[0];
+      if (!p || p.heroId !== 'xunlianshi') return;
+      const damage = p.flags.foxDamage || 1;
+      const fed = p.flags.foxFed || 0;
+      const body = `<div class="fox-detail">
+        <div class="fox-detail__art"><img src="assets/summons/huohuli-card.webp" alt="火狐狸" /></div>
+        <div>
+          <div class="fox-detail__name">火狐狸</div>
+          <div class="fox-detail__stats">
+            <span>本局伤害<b>${damage}</b></span>
+            <span>已投喂<b>${fed}</b></span>
+          </div>
+          <p>【火花】结束阶段对对方造成 ${damage} 点伤害（优先破甲）。</p>
+          <p>结束阶段可连续投喂手牌；每累计投喂 2 张，本局伤害永久 +1。</p>
+        </div>
+      </div>`;
+      this.openModal({ title: '火狐狸 · 培育', eyebrow: 'FIRE FOX', body, dismissible: true, wide: true });
+    },
+
     openEnemyHandPeek() {
       if (!this.game) return;
       const me = this.game.players[0];
       const enemy = this.game.players[1];
       if (!me || !enemy || !['yuyan', 'heike'].includes(me.heroId)) return;
       const isHacker = me.heroId === 'heike';
-      const hand = enemy.hand.length
+      const hand = isHacker ? '' : (enemy.hand.length
         ? `<div class="card-pick-grid">${enemy.hand.map((card) => {
             const def = this.game.cardDef(card);
             return `<div class="card-pick" title="${esc(def.name)}"><img src="${esc(def.img)}" alt="${esc(def.name)}" /><span class="card-pick__name">${esc(def.name)}</span></div>`;
           }).join('')}</div>`
-        : '<div class="pile-empty">对方没有手牌</div>';
+        : '<div class="pile-empty">对方没有手牌</div>');
       let deck = '';
       if (isHacker) {
         const counts = {};
@@ -1282,10 +1307,10 @@
           const def = this.game.cardDef(card);
           counts[def.id] = (counts[def.id] || 0) + 1;
         });
-        deck = `<div class="codex__intro" style="margin-top:14px">对方牌库剩余：</div><div class="deck-intel">${CG.CARDS.map((c) => `<span><b>${esc(c.name)}</b><i>${counts[c.id] || 0}</i></span>`).join('')}</div>`;
+        deck = `<div class="codex__intro">对方牌库剩余数量（看不到具体手牌）：</div><div class="deck-intel">${CG.CARDS.map((c) => `<span><b>${esc(c.name)}</b><i>${counts[c.id] || 0}</i></span>`).join('')}</div>`;
       }
-      const body = `<p class="codex__intro">${isHacker ? '「骇入」：对方当前全部手牌与牌库剩余数量。' : '「前瞻」：对方当前全部手牌，共 <b style="color:var(--gold-2)">' + enemy.hand.length + '</b> 张。'}</p>${hand}${deck}`;
-      this.openModal({ title: isHacker ? '骇入 · 对方情报' : '前瞻 · 对方手牌', eyebrow: isHacker ? 'HACK' : 'FORESIGHT', body, dismissible: true, wide: true });
+      const body = `<p class="codex__intro">${isHacker ? '「骇入」：你只能看到对方牌库剩余数量，以及对方摸牌时的一张提示。' : '「前瞻」：对方当前全部手牌，共 <b style="color:var(--gold-2)">' + enemy.hand.length + '</b> 张。'}</p>${hand}${deck}`;
+      this.openModal({ title: isHacker ? '骇入 · 牌库情报' : '前瞻 · 对方手牌', eyebrow: isHacker ? 'HACK' : 'FORESIGHT', body, dismissible: true, wide: true });
     },
 
     openBattleLog() {
@@ -1475,7 +1500,7 @@
         poison: 'poison', blood: 'hit', skill: 'skill', invalid: 'error', extraShield: 'armor',
         extraShieldConvert: 'armor', extraShieldExpire: 'shieldBreak',
         glare: 'heavy', blind: 'poison', summon: 'skill', fox: 'hit', foxFeed: 'skill', bless: 'armor',
-        hackDraw: 'draw', hackSuccess: 'skill', hackFail: 'error', pojie: 'heavy',
+        hackDraw: 'draw', hackSuccess: 'skill', hackFail: 'error', pojie: 'heavy', suyuAwake: 'heal',
         counter: 'hit', revive: 'win', exhausted: 'poison', juesha: 'heavy', wolf: 'heavy',
         armorHit: 'shieldBreak', pierce: 'hit', delayFire: 'skill', betWin: 'skill', betFail: 'error',
       };
@@ -1550,7 +1575,9 @@
         return;
       }
       if (name === 'foxFeed') {
-        this.toast('火狐狸吞噬手牌，伤害永久 +1（当前 ' + data.value + '）', 'skill', 2200);
+        this.toast(data.gained
+          ? '火狐狸吞噬手牌，伤害永久 +1（当前 ' + data.value + '）'
+          : '火狐狸吞噬手牌（累计 ' + data.fed + ' 张），再投喂 1 张提升伤害', 'skill', 2200);
         return;
       }
       if (name === 'hackDraw') {
@@ -1567,6 +1594,10 @@
       }
       if (name === 'pojie') {
         this.toast('「破垒」：护甲破碎，追加 1 点伤害并摸牌', 'skill', 1800);
+        return;
+      }
+      if (name === 'suyuAwake') {
+        this.toast('「静息」觉醒：此后每回合出牌 ≤1 张时回复 2 点生命', 'skill', 2600);
         return;
       }
       if (name === 'armorHit') {

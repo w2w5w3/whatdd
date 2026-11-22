@@ -16,7 +16,7 @@
       if (hero.img) list.add(hero.img);
       if (hero.portrait) list.add(hero.portrait);
     });
-    ['assets/backs/back1.webp', 'assets/backs/back2.webp', 'assets/backs/back3.webp', 'assets/summons/huohuli.webp']
+    ['assets/backs/back1.webp', 'assets/backs/back2.webp', 'assets/backs/back3.webp', 'assets/summons/huohuli.webp', 'assets/summons/huohuli-card.webp']
       .forEach((src) => list.add(src));
     return Array.from(list);
   }

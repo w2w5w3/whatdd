@@ -59,6 +59,7 @@
       blessingBonus: 0,
       foxDamage: 1,
       foxFed: 0,
+      suyuAwakened: false,
     };
   }
 
@@ -669,6 +670,8 @@
           kind: 'choose',
           title: '赐福 · 选择这张牌的目标',
           desc: '将这张非伤害牌赐福给对方，目标会承受它的效果；如此做后，你所有非伤害牌数值永久 +1（可叠加）。',
+          card: def,
+          cardType: def.type,
           options: [
             { value: 'self', label: '自己使用', desc: '按正常规则对自己生效，不触发赐福成长。' },
             { value: 'enemy', label: '赐福对方', desc: '让对方获得这张牌的效果，并使你的非伤害牌数值 +1。' },
@@ -968,18 +971,33 @@
      * 玫瑰老师「延授」：弃置的牌在下一回合结束阶段发动。
      * 届时可直接发动，或再延迟一回合并使数值 +2。
      */
+    async suyuEndPhase(p) {
+      if (p.heroId !== 'suyu' || p.hp <= 0) return;
+      if (p.hp <= 8 && !p.flags.suyuAwakened) {
+        p.flags.suyuAwakened = true;
+        this.log('「静息」：' + p.name + ' 首次踏入 8 点生命，此后只出 ≤1 张牌时回复 2 点生命。', 'skill');
+        this.fx('suyuAwake', { player: p.index });
+      }
+      if (p.played <= 1) {
+        const amount = p.flags.suyuAwakened ? 2 : 1;
+        this.log('「静息」：本回合出牌 ≤ 1，' + p.name + ' 回复 ' + amount + ' 点生命。', 'heal');
+        await this.heal(p, amount, { source: 'suyu' });
+      }
+    }
+
     async trainerEndPhase(p) {
       if (this.state.over || p.heroId !== 'xunlianshi' || p.hp <= 0) return;
       const enemy = this.other(p);
       if (!enemy) return;
 
-      // 玩家可在结束阶段连续投喂手牌（AI 简化处理：不投喂）
+      // 结束阶段可连续投喂；每累计 2 张，火狐狸伤害永久 +1
+      const maxFeeds = p.index === 0 ? 12 : 2;
       let feedGuard = 0;
-      while (p.index === 0 && p.hand.length && feedGuard++ < 12) {
+      while (p.hand.length && feedGuard++ < maxFeeds) {
         const pick = await this.ask(p, {
           kind: 'card',
           title: '火狐狸 · 投喂手牌',
-          desc: '可投喂手牌，使火狐狸本局伤害永久 +1；可连续投喂，点“跳过”开始攻击。',
+          desc: '可投喂手牌；每累计投喂 2 张，火狐狸本局伤害永久 +1。点“跳过”开始攻击。',
           cards: p.hand.slice(),
           default: null,
           allowCancel: true,
@@ -989,10 +1007,12 @@
         const removed = await this.removeFromHand(p, card.uid, { skipCaptain: true });
         if (!removed) break;
         p.discard.push(removed);
-        p.flags.foxDamage = (p.flags.foxDamage || 1) + 1;
         p.flags.foxFed = (p.flags.foxFed || 0) + 1;
-        this.log('「培育」：投喂「' + this.cardDef(removed).name + '」，火狐狸本局伤害永久 +1（当前 ' + p.flags.foxDamage + '）。', 'skill');
-        this.fx('foxFeed', { player: p.index, value: p.flags.foxDamage, card: this.cardDef(removed) });
+        const gained = p.flags.foxFed % 2 === 0;
+        if (gained) p.flags.foxDamage = (p.flags.foxDamage || 1) + 1;
+        this.log('「培育」：投喂「' + this.cardDef(removed).name + '」（累计 ' + p.flags.foxFed + ' 张）' +
+          (gained ? '，火狐狸伤害永久 +1（当前 ' + p.flags.foxDamage + '）。' : '，再投喂 1 张即可提升伤害。'), 'skill');
+        this.fx('foxFeed', { player: p.index, value: p.flags.foxDamage, fed: p.flags.foxFed, gained, card: this.cardDef(removed) });
         this.update();
         await this.wait(220);
       }
@@ -1285,6 +1305,11 @@
       const lost = before - p.hp;
       if (lost > 0) {
         this.checkBloodThreshold(before, p.hp);
+        if (p.heroId === 'suyu' && p.hp > 0 && p.hp <= 8 && !p.flags.suyuAwakened) {
+          p.flags.suyuAwakened = true;
+          this.log('「静息」：' + p.name + ' 首次踏入 8 点生命，此后只出 ≤1 张牌时回复 2 点生命。', 'skill');
+          this.fx('suyuAwake', { player: p.index });
+        }
         this.update();
       }
       return lost;
@@ -1779,11 +1804,7 @@
       }
 
       // 溯愈医者：行动阶段结束时判定
-      if (p.heroId === 'suyu' && p.played <= 1 && p.hp > 0) {
-        const amount = p.hp <= 8 ? 2 : 1;
-        this.log('「静息」：本回合出牌 ≤ 1，' + p.name + ' 回复 ' + amount + ' 点生命。', 'heal');
-        await this.heal(p, amount, { source: 'suyu' });
-      }
+      await this.suyuEndPhase(p);
 
       this.state.phase = 'end';
       this.update();
